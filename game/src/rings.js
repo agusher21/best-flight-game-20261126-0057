@@ -17,9 +17,12 @@ export function createRings(missionId, random) {
   } else if (missionId === 1) {
     // Parcel Drop: approach path to rooftop
     baseY = 220;
-  } else {
+  } else if (missionId === 2) {
     // Storm Return: approach to runway
     baseY = 300;
+  } else {
+    // Dawn Landing: final approach from east, descending to runway
+    baseY = 250;
   }
 
   const startX = 300;
@@ -43,13 +46,10 @@ export function createRings(missionId, random) {
       if (i >= mission.ringCount - 2) {
         // Last rings lead down to the pad: high and well short of the tower,
         // so the pilot has room to slow to delivery speed before the roof.
-        // (Ring 4 used to sit at (760, 320) — 72 px from the pad — and the
-        // plane arrived at 285 px/s with no room to brake, diving into the
-        // roof for 60 damage before it could deliver.)
         x = 640 + (i - (mission.ringCount - 2)) * 60;
         y = 240 + (i - (mission.ringCount - 2)) * 40;
       }
-    } else {
+    } else if (missionId === 2) {
       // Storm Return: westbound descent to the runway. The first three rings
       // stay ABOVE Monas tower (top y=220) so the approach never threads the
       // monument; the last two set up a shallow final to the runway (190, 626).
@@ -60,6 +60,19 @@ export function createRings(missionId, random) {
         { x: 430, y: 280 },
         { x: 330, y: 400 },
         { x: 280, y: 580 },
+      ];
+      const p = PATH[i % PATH.length];
+      x = p.x;
+      y = p.y;
+    } else {
+      // Dawn Landing: east to west final approach, 4 rings setting up a
+      // precision ILS-style approach to Runway 18 (190, ~626). Rings are
+      // spaced for a 3-degree glideslope at ~140kt.
+      const PATH = [
+        { x: 900, y: 200 },   // Initial approach fix
+        { x: 650, y: 280 },   // Intermediate
+        { x: 420, y: 420 },   // Final approach fix
+        { x: 280, y: 560 },   // Threshold crossing
       ];
       const p = PATH[i % PATH.length];
       x = p.x;

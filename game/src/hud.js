@@ -1,16 +1,9 @@
-// HUD (Heads Up Display) rendering for Jakarta Night Courier.
+// HUD (Heads Up Display) rendering for Jakarta Night Courier — Storm Run.
 // Draws all flight instruments, gauges, and UI panels with glowing night-vision aesthetic.
 
-import { FIELD, HUD, PALETTE, PLANE, MISSIONS, SCREENS } from './config.js';
+import { FIELD, HUD, PALETTE, PLANE, MISSIONS, SCREENS, CAMERA } from './config.js';
 
-/** Cache for text measurements to avoid allocations. */
-const textCache = new Map();
-
-function getCachedText(ctx, font, text, color, align) {
-  const key = `${font}|${text}|${color}|${align}`;
-  return key;
-}
-
+/** Draw text helper. */
 function drawText(ctx, text, x, y, size, color, align = 'left', baseline = 'alphabetic', font = HUD.font) {
   ctx.font = `${size}px ${font}`;
   ctx.fillStyle = color;
@@ -23,7 +16,6 @@ function drawGlowText(ctx, text, x, y, size, color, glowColor, align = 'left') {
   ctx.font = `${size}px ${HUD.font}`;
   ctx.textAlign = align;
   ctx.textBaseline = 'alphabetic';
-  // Glow
   ctx.shadowColor = glowColor;
   ctx.shadowBlur = 8;
   ctx.fillStyle = color;
@@ -84,7 +76,6 @@ function drawCircularGauge(ctx, cx, cy, radius, value, maxValue, label, color, g
 /** Draw a vertical tape gauge (speed, altimeter style). */
 function drawTapeGauge(ctx, x, y, width, height, value, maxValue, label, unit, color, glowColor, majorStep, minorStep) {
   const pct = Math.max(0, Math.min(1, value / maxValue));
-  const visibleRange = height * 0.8;
   const centerY = y + height / 2;
 
   // Background
@@ -111,23 +102,19 @@ function drawTapeGauge(ctx, x, y, width, height, value, maxValue, label, unit, c
     const tickPct = tickValue / maxValue;
     const tickY = y + height - tickPct * height;
 
-    // Only draw ticks near visible area
     if (tickY < y - 20 || tickY > y + height + 20) continue;
 
-    const isMajor = tickValue % majorStep === 0;
-    const tickLen = isMajor ? 20 : 10;
+    const tickLen = 20;
     const tickX = x + width;
 
     ctx.beginPath();
     ctx.moveTo(tickX, tickY);
     ctx.lineTo(tickX + tickLen, tickY);
-    ctx.lineWidth = isMajor ? 2 : 1;
-    ctx.strokeStyle = isMajor ? color : HUD.textMuted;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = color;
     ctx.stroke();
 
-    if (isMajor) {
-      drawText(ctx, `${tickValue}${unit}`, tickX + tickLen + 4, tickY + 4, 11, HUD.textMuted, 'left');
-    }
+    drawText(ctx, `${tickValue}${unit}`, tickX + tickLen + 4, tickY + 4, 11, HUD.textMuted, 'left');
   }
 
   // Current value indicator (triangle on right)
@@ -150,9 +137,7 @@ function drawTapeGauge(ctx, x, y, width, height, value, maxValue, label, unit, c
 
 /** Draw compass/heading indicator. */
 function drawCompass(ctx, cx, cy, radius, heading, color, glowColor) {
-  // Heading in degrees, 0 = North, 90 = East, etc.
-  // Our heading: 0 = East (right), -PI/2 = North (up)
-  const headingDeg = ((heading * 180 / Math.PI) + 450) % 360; // Convert to 0=N, 90=E
+  const headingDeg = ((heading * 180 / Math.PI) + 450) % 360;
   const cardinal = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(headingDeg / 45) % 8];
 
   // Outer ring
@@ -197,7 +182,7 @@ function drawCompass(ctx, cx, cy, radius, heading, color, glowColor) {
   }
 
   // Heading bug (triangle at top)
-  const bugAngle = -heading - Math.PI / 2; // Our heading 0=E, compass 0=N
+  const bugAngle = -heading - Math.PI / 2;
   ctx.save();
   ctx.translate(cx, cy);
   ctx.rotate(bugAngle);
@@ -220,9 +205,7 @@ function drawCompass(ctx, cx, cy, radius, heading, color, glowColor) {
 
 /** Draw artificial horizon (attitude indicator). */
 function drawAttitudeIndicator(ctx, cx, cy, radius, pitch, roll, color, glowColor) {
-  // Pitch: positive = nose up, negative = nose down
-  // Roll: positive = right wing down
-  const maxPitch = Math.PI / 3; // 60 degrees max display
+  const maxPitch = Math.PI / 3;
 
   ctx.save();
   ctx.translate(cx, cy);
@@ -249,7 +232,7 @@ function drawAttitudeIndicator(ctx, cx, cy, radius, pitch, roll, color, glowColo
   // Pitch ladder lines
   ctx.strokeStyle = color;
   ctx.lineWidth = 1;
-  for (let p = -maxPitch; p <= maxPitch; p += Math.PI / 18) { // 10 degree steps
+  for (let p = -maxPitch; p <= maxPitch; p += Math.PI / 18) {
     const y = p * radius / maxPitch * 1.2;
     if (Math.abs(y) > radius) continue;
     const width = 0.4 * radius * (1 - Math.abs(p) / maxPitch);
@@ -257,7 +240,6 @@ function drawAttitudeIndicator(ctx, cx, cy, radius, pitch, roll, color, glowColo
     ctx.moveTo(-width / 2, y);
     ctx.lineTo(width / 2, y);
     ctx.stroke();
-    // Label every 20 degrees
     if (Math.abs(p * 180 / Math.PI) % 20 < 0.01) {
       drawText(ctx, `${Math.round(-p * 180 / Math.PI)}`, width / 2 + 8, y + 4, 9, HUD.textMuted, 'left');
     }
@@ -354,13 +336,22 @@ function drawFlapsIndicator(ctx, x, y, size, flaps, color, glowColor) {
 
 /** Draw mission objective panel. */
 function drawMissionPanel(ctx, mission, objectives, timeRemaining, x, y, width, missionId) {
+  let objectiveText = '';
+  if (missionId === 0) {
+    objectiveText = `RINGS: ${objectives.ringsPassed}/${objectives.ringsTotal}`;
+  } else if (missionId === 1) {
+    objectiveText = `RINGS: ${objectives.ringsPassed}/${objectives.ringsTotal}  |  PARCEL: ${objectives.parcelDelivered ? 'DELIVERED' : 'PENDING'}`;
+  } else if (missionId === 2) {
+    objectiveText = `RINGS: ${objectives.ringsPassed}/${objectives.ringsTotal}  |  LAND: ${objectives.landed ? 'YES' : 'NO'}  |  STORM ACTIVE`;
+  } else if (missionId === 3) {
+    objectiveText = `RINGS: ${objectives.ringsPassed}/${objectives.ringsTotal}  |  LAND: ${objectives.landed ? 'YES' : 'NO'}  |  DAWN APPROACH`;
+  }
+
   const lines = [
     `MISSION: ${mission.name}`,
     `TIME: ${Math.ceil(timeRemaining)}s`,
     '',
-    missionId === 0 ? `RINGS: ${objectives.ringsPassed}/${objectives.ringsTotal}` :
-    missionId === 1 ? `RINGS: ${objectives.ringsPassed}/${objectives.ringsTotal}  |  PARCEL: ${objectives.parcelDelivered ? 'DELIVERED' : 'PENDING'}` :
-    `RINGS: ${objectives.ringsPassed}/${objectives.ringsTotal}  |  LAND: ${objectives.landed ? 'YES' : 'NO'}`,
+    objectiveText,
   ];
 
   const lineHeight = 22;
@@ -380,18 +371,17 @@ function drawMissionPanel(ctx, mission, objectives, timeRemaining, x, y, width, 
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const color = line.startsWith('MISSION:') ? HUD.instrumentGlow :
-                  line.startsWith('TIME:') && timeRemaining < 30 ? HUD.warningColor :
-                  line.includes('DELIVERED') ? HUD.safeColor :
-                  line.includes('PENDING') ? HUD.cautionColor :
-                  HUD.textPrimary;
+    let color = HUD.textPrimary;
+    if (line.startsWith('MISSION:')) color = HUD.instrumentGlow;
+    else if (line.startsWith('TIME:') && timeRemaining < 30) color = HUD.warningColor;
+    else if (line.includes('DELIVERED') || line.includes('YES')) color = HUD.safeColor;
+    else if (line.includes('PENDING') || line.includes('STORM') || line.includes('DAWN')) color = HUD.cautionColor;
     drawText(ctx, line, x + padding, y + padding + i * lineHeight, 14, color, 'left');
   }
 }
 
 /** Draw screen overlay (title, briefing, paused, game over, mission complete). */
 function drawScreenOverlay(ctx, canvasWidth, canvasHeight, screen, data = {}) {
-  // Semi-transparent backdrop (lighter on the title so the night city glows through)
   ctx.fillStyle = screen === SCREENS.TITLE ? 'rgba(5, 8, 20, 0.78)' : 'rgba(5, 8, 20, 0.92)';
   ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
@@ -400,75 +390,82 @@ function drawScreenOverlay(ctx, canvasWidth, canvasHeight, screen, data = {}) {
 
   switch (screen) {
     case SCREENS.TITLE: {
-      // Title
-      drawGlowText(ctx, 'JAKARTA NIGHT COURIER', centerX, centerY - 120, 48, HUD.textPrimary, HUD.instrumentGlow, 'center');
-      drawText(ctx, 'A Night Ring-Run Flight Game', centerX, centerY - 70, 20, HUD.textMuted, 'center');
-      drawText(ctx, 'Fly the neon skyline. Deliver the cargo. Land before dawn.', centerX, centerY - 40, 16, HUD.textMuted, 'center');
+      drawGlowText(ctx, 'JAKARTA NIGHT COURIER', centerX, centerY - 140, 48, HUD.textPrimary, HUD.instrumentGlow, 'center');
+      drawText(ctx, 'Storm Run', centerX, centerY - 95, 24, HUD.cautionColor, 'center');
+      drawText(ctx, 'Fly the neon skyline. Deliver the cargo. Survive the storm. Land at dawn.', centerX, centerY - 65, 16, HUD.textMuted, 'center');
 
-      // Controls hint (two columns, separately aligned so they never collide)
-      drawText(ctx, 'CONTROLS', centerX, centerY + 30, 18, HUD.instrumentGlow, 'center');
-      drawText(ctx, 'W / Up — Throttle Up', centerX - 30, centerY + 60, 14, HUD.textPrimary, 'right');
-      drawText(ctx, 'A / Left — Turn Left', centerX + 30, centerY + 60, 14, HUD.textPrimary, 'left');
-      drawText(ctx, 'S / Down — Throttle Down', centerX - 30, centerY + 82, 14, HUD.textPrimary, 'right');
-      drawText(ctx, 'D / Right — Turn Right', centerX + 30, centerY + 82, 14, HUD.textPrimary, 'left');
-      drawText(ctx, 'SPACE — Flaps / Brake', centerX - 30, centerY + 104, 14, HUD.textPrimary, 'right');
-      drawText(ctx, 'P / ESC — Pause', centerX + 30, centerY + 104, 14, HUD.textPrimary, 'left');
+      drawText(ctx, 'CONTROLS', centerX, centerY, 18, HUD.instrumentGlow, 'center');
+      drawText(ctx, 'W / Up — Throttle Up', centerX - 30, centerY + 30, 14, HUD.textPrimary, 'right');
+      drawText(ctx, 'A / Left — Turn Left', centerX + 30, centerY + 30, 14, HUD.textPrimary, 'left');
+      drawText(ctx, 'S / Down — Throttle Down', centerX - 30, centerY + 52, 14, HUD.textPrimary, 'right');
+      drawText(ctx, 'D / Right — Turn Right', centerX + 30, centerY + 52, 14, HUD.textPrimary, 'left');
+      drawText(ctx, 'SPACE — Flaps / Brake', centerX - 30, centerY + 74, 14, HUD.textPrimary, 'right');
+      drawText(ctx, 'P / ESC — Pause', centerX + 30, centerY + 74, 14, HUD.textPrimary, 'left');
 
-      // Press to start
       const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 300);
       ctx.globalAlpha = pulse;
-      drawText(ctx, 'PRESS SPACE OR CLICK TO BEGIN', centerX, centerY + 160, 20, HUD.instrumentGlow, 'center');
+      drawText(ctx, 'PRESS SPACE OR CLICK TO BEGIN', centerX, centerY + 130, 20, HUD.instrumentGlow, 'center');
       ctx.globalAlpha = 1;
       break;
     }
 
     case SCREENS.MISSION_SELECT: {
-      drawGlowText(ctx, 'SELECT MISSION', centerX, centerY - 140, 36, HUD.textPrimary, HUD.instrumentGlow, 'center');
-      const missions = MISSIONS;
-      for (let i = 0; i < missions.length; i++) {
-        const m = missions[i];
+      drawGlowText(ctx, 'SELECT MISSION', centerX, centerY - 160, 36, HUD.textPrimary, HUD.instrumentGlow, 'center');
+      for (let i = 0; i < MISSIONS.length; i++) {
+        const m = MISSIONS[i];
         const sel = i === data.selectedMission;
-        const y = centerY - 40 + i * 80;
-        const w = 600;
-        const h = 65;
+        const y = centerY - 60 + i * 85;
+        const w = 640;
+        const h = 70;
         const x = centerX - w / 2;
 
-        // Mission card
         ctx.fillStyle = sel ? 'rgba(0, 255, 204, 0.15)' : 'rgba(20, 30, 50, 0.8)';
         ctx.fillRect(x, y, w, h);
         ctx.strokeStyle = sel ? HUD.instrumentGlow : HUD.instrumentBorder;
         ctx.lineWidth = sel ? 3 : 2;
         ctx.strokeRect(x, y, w, h);
 
-        drawText(ctx, `${i + 1}. ${m.name}`, centerX, y + 24, sel ? 22 : 18, sel ? HUD.instrumentGlow : HUD.textPrimary, 'center');
+        let missionIcon = '';
+        if (i === 0) missionIcon = '✈ ';
+        else if (i === 1) missionIcon = '📦 ';
+        else if (i === 2) missionIcon = '⛈ ';
+        else if (i === 3) missionIcon = '🌅 ';
+
+        drawText(ctx, `${i + 1}. ${missionIcon}${m.name}`, centerX, y + 24, sel ? 22 : 18, sel ? HUD.instrumentGlow : HUD.textPrimary, 'center');
         drawText(ctx, m.briefing, centerX, y + 48, 13, HUD.textMuted, 'center');
       }
-      drawText(ctx, 'TAB / SHIFT+TAB to select  •  SPACE to confirm', centerX, centerY + 200, 14, HUD.textMuted, 'center');
+      drawText(ctx, 'TAB / SHIFT+TAB to select  •  SPACE to confirm', centerX, centerY + 220, 14, HUD.textMuted, 'center');
       break;
     }
 
     case SCREENS.BRIEFING: {
       const mission = data.mission;
-      drawGlowText(ctx, `MISSION ${data.missionId + 1}: ${mission.name}`, centerX, centerY - 140, 32, HUD.textPrimary, HUD.instrumentGlow, 'center');
-      drawText(ctx, mission.briefing, centerX, centerY - 70, 18, HUD.textPrimary, 'center');
+      drawGlowText(ctx, `MISSION ${data.missionId + 1}: ${mission.name}`, centerX, centerY - 150, 32, HUD.textPrimary, HUD.instrumentGlow, 'center');
+      drawText(ctx, mission.briefing, centerX, centerY - 80, 18, HUD.textPrimary, 'center');
 
-      drawText(ctx, 'OBJECTIVES:', centerX, centerY - 20, 16, HUD.instrumentGlow, 'center');
+      drawText(ctx, 'OBJECTIVES:', centerX, centerY - 30, 16, HUD.instrumentGlow, 'center');
       if (data.missionId === 0) {
-        drawText(ctx, '• Fly through all 8 rings in order', centerX, centerY + 10, 15, HUD.textPrimary, 'center');
-        drawText(ctx, '• Maintain speed and precision', centerX, centerY + 35, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Fly through all 8 rings in order', centerX, centerY + 5, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Maintain speed and precision for combo bonus', centerX, centerY + 30, 15, HUD.textPrimary, 'center');
       } else if (data.missionId === 1) {
-        drawText(ctx, '• Pass 4 rings to reach the drop zone', centerX, centerY + 10, 15, HUD.textPrimary, 'center');
-        drawText(ctx, '• Slow down and align with rooftop pad', centerX, centerY + 35, 15, HUD.textPrimary, 'center');
-        drawText(ctx, '• Drop parcel at low altitude', centerX, centerY + 60, 15, HUD.textPrimary, 'center');
-      } else {
-        drawText(ctx, '• Navigate 6 rings through the storm', centerX, centerY + 10, 15, HUD.textPrimary, 'center');
-        drawText(ctx, '• Correct for crosswinds constantly', centerX, centerY + 35, 15, HUD.textPrimary, 'center');
-        drawText(ctx, '• Land on runway before fuel runs out', centerX, centerY + 60, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Pass 4 rings to reach the drop zone', centerX, centerY + 5, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Slow down and align with rooftop pad', centerX, centerY + 30, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Drop parcel at low altitude', centerX, centerY + 55, 15, HUD.textPrimary, 'center');
+      } else if (data.missionId === 2) {
+        drawText(ctx, '• Navigate 6 rings through the storm', centerX, centerY + 5, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Correct for crosswinds and turbulence', centerX, centerY + 30, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Lightning reveals the city — use it', centerX, centerY + 55, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Land on runway before fuel runs out', centerX, centerY + 80, 15, HUD.textPrimary, 'center');
+      } else if (data.missionId === 3) {
+        drawText(ctx, '• Final approach: 4 rings to the runway', centerX, centerY + 5, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Storm clears, dawn breaks — visibility improves', centerX, centerY + 30, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Perfect landing bonus for precision', centerX, centerY + 55, 15, HUD.textPrimary, 'center');
+        drawText(ctx, '• Land on Runway 18 to complete the campaign', centerX, centerY + 80, 15, HUD.textPrimary, 'center');
       }
 
       const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 300);
       ctx.globalAlpha = pulse;
-      drawText(ctx, 'PRESS SPACE TO LAUNCH', centerX, centerY + 130, 20, HUD.instrumentGlow, 'center');
+      drawText(ctx, 'PRESS SPACE TO LAUNCH', centerX, centerY + 140, 20, HUD.instrumentGlow, 'center');
       ctx.globalAlpha = 1;
       break;
     }
@@ -483,7 +480,7 @@ function drawScreenOverlay(ctx, canvasWidth, canvasHeight, screen, data = {}) {
       drawGlowText(ctx, 'MISSION COMPLETE', centerX, centerY - 80, 42, HUD.safeColor, HUD.safeColor, 'center');
       drawText(ctx, `${data.missionName}`, centerX, centerY - 30, 22, HUD.textPrimary, 'center');
       drawText(ctx, `SCORE: ${data.score.toLocaleString()}`, centerX, centerY + 10, 28, HUD.instrumentGlow, 'center');
-      drawText(ctx, `TOTAL: ${data.totalScore.toLocaleString()}`, centerX, centerY + 50, 18, HUD.textMuted, 'center');
+      drawText(ctx, `BEST: ${data.totalScore.toLocaleString()}`, centerX, centerY + 50, 18, HUD.textMuted, 'center');
 
       const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 300);
       ctx.globalAlpha = pulse;
@@ -495,7 +492,7 @@ function drawScreenOverlay(ctx, canvasWidth, canvasHeight, screen, data = {}) {
     case SCREENS.GAME_OVER: {
       drawGlowText(ctx, data.reason || 'MISSION FAILED', centerX, centerY - 60, 42, HUD.warningColor, HUD.warningColor, 'center');
       drawText(ctx, `FINAL SCORE: ${data.score.toLocaleString()}`, centerX, centerY + 10, 28, HUD.textPrimary, 'center');
-      drawText(ctx, `TOTAL: ${data.totalScore.toLocaleString()}`, centerX, centerY + 50, 18, HUD.textMuted, 'center');
+      drawText(ctx, `BEST: ${data.totalScore.toLocaleString()}`, centerX, centerY + 50, 18, HUD.textMuted, 'center');
 
       const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 300);
       ctx.globalAlpha = pulse;
@@ -508,7 +505,6 @@ function drawScreenOverlay(ctx, canvasWidth, canvasHeight, screen, data = {}) {
 
 /** Main HUD draw function. */
 export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, missionManager, screen, screenData) {
-  // Scale from logical 1280x720 to canvas
   const scale = Math.min(canvasWidth / FIELD.width, canvasHeight / FIELD.height);
   const offsetX = (canvasWidth - FIELD.width * scale) / 2;
   const offsetY = (canvasHeight - FIELD.height * scale) / 2;
@@ -518,7 +514,6 @@ export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, m
   ctx.scale(scale, scale);
 
   if (screen === SCREENS.PLAY || screen === SCREENS.BRIEFING) {
-    // --- LEFT SIDE: Altitude tape, Compass, Throttle ---
     const leftX = 20;
 
     // Altimeter tape (vertical, left)
@@ -530,10 +525,10 @@ export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, m
     // Throttle indicator (below compass)
     drawThrottleIndicator(ctx, leftX + 10, 450, 40, 180, plane.throttle, HUD.instrumentGlow, HUD.instrumentGlow);
 
-    // Flaps indicator (right of the throttle bar, clear of its % readout)
+    // Flaps indicator
     drawFlapsIndicator(ctx, leftX + 90, 610, 20, plane.flaps, HUD.cautionColor, HUD.cautionColor);
 
-    // --- RIGHT SIDE: Speed tape, Artificial Horizon, Fuel, Damage ---
+    // RIGHT SIDE: Speed tape, Artificial Horizon, Fuel, Damage
     const rightX = FIELD.width - 100;
 
     // Airspeed tape (vertical, right)
@@ -550,12 +545,11 @@ export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, m
     const dmgGlow = plane.damage > 60 ? HUD.warningColor : plane.damage > 30 ? HUD.cautionColor : HUD.safeColor;
     drawCircularGauge(ctx, rightX - 30, 590, 50, plane.damage, PLANE.crashDamage, 'DMG', dmgColor, dmgGlow, HUD.instrumentBg);
 
-    // --- TOP CENTER: Mission info, Ring counter ---
+    // TOP CENTER: Mission info, Ring counter
     const mission = missionManager.getMission();
     const progress = missionManager.getMissionProgress();
     const nextRing = rings.find(r => !r.passed);
 
-    // Mission name and timer (before launch the briefing shows the full limit)
     const shownTime = screen === SCREENS.BRIEFING ? mission.timeLimit : progress.timeRemaining;
     ctx.fillStyle = HUD.instrumentBg;
     ctx.fillRect(FIELD.width / 2 - 150, 10, 300, 50);
@@ -570,25 +564,33 @@ export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, m
     // Score (top-right)
     drawGlowText(ctx, `SCORE ${progress.score.toLocaleString()}`, FIELD.width - 20, 36, 20, HUD.instrumentGlow, HUD.instrumentGlow, 'right');
 
-    // Ring counter (below mission)
+    // Storm/Dawn indicator
+    if (mission.hasStorm) {
+      drawGlowText(ctx, '⛈ STORM ACTIVE', FIELD.width / 2, 75, 16, HUD.cautionColor, HUD.cautionColor, 'center');
+    }
+    if (mission.hasDawn) {
+      drawGlowText(ctx, '🌅 DAWN APPROACH', FIELD.width / 2, 75, 16, HUD.cautionColor, HUD.cautionColor, 'center');
+    }
+
+    // Ring counter
     if (nextRing) {
       const ringsPassed = rings.filter(r => r.passed).length;
       const ringText = `RING ${ringsPassed + 1}/${mission.ringCount}`;
       const dist = Math.sqrt((nextRing.x - plane.x) ** 2 + (nextRing.y - plane.y) ** 2);
       ctx.fillStyle = HUD.instrumentBg;
-      ctx.fillRect(FIELD.width / 2 - 120, 65, 240, 36);
+      ctx.fillRect(FIELD.width / 2 - 120, mission.hasStorm || mission.hasDawn ? 95 : 65, 240, 36);
       ctx.strokeStyle = nextRing.colorGlow;
       ctx.lineWidth = 2;
-      ctx.strokeRect(FIELD.width / 2 - 120, 65, 240, 36);
-      drawText(ctx, ringText, FIELD.width / 2, 83, 14, nextRing.colorPrimary, 'center');
-      drawText(ctx, `${Math.round(dist)}m`, FIELD.width / 2, 97, 12, HUD.textMuted, 'center');
+      ctx.strokeRect(FIELD.width / 2 - 120, mission.hasStorm || mission.hasDawn ? 95 : 65, 240, 36);
+      drawText(ctx, ringText, FIELD.width / 2, mission.hasStorm || mission.hasDawn ? 113 : 83, 14, nextRing.colorPrimary, 'center');
+      drawText(ctx, `${Math.round(dist)}m`, FIELD.width / 2, mission.hasStorm || mission.hasDawn ? 127 : 97, 12, HUD.textMuted, 'center');
     }
 
-    // --- BOTTOM CENTER: Speed/Heading digital readouts ---
+    // BOTTOM CENTER: Speed/Heading digital readouts
     drawGlowText(ctx, `${Math.round(plane.speed)} KT`, 120, FIELD.height - 40, 24, HUD.instrumentGlow, HUD.instrumentGlow, 'center');
     drawGlowText(ctx, `${Math.round(((plane.heading * 180 / Math.PI) + 450) % 360).toString().padStart(3, '0')}°`, FIELD.width - 120, FIELD.height - 40, 24, HUD.instrumentGlow, HUD.instrumentGlow, 'center');
 
-    // --- WARNING INDICATORS ---
+    // WARNING INDICATORS
     let warnY = 120;
     if (plane.fuel < 20) {
       drawGlowText(ctx, `FUEL LOW: ${Math.round(plane.fuel)}%`, FIELD.width / 2, warnY, 18, HUD.warningColor, HUD.warningColor, 'center');

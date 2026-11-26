@@ -1,26 +1,54 @@
-// Deterministic screenshot scenes for Jakarta Night Courier.
+// Deterministic screenshot scenes for Jakarta Night Courier — Storm Run.
 // Each scene plays the real rules forward from a fresh world for a fixed number
 // of steps, steered by a simple autopilot (steer at the next ring / pad /
 // runway, hold a target speed, climb over buildings in the way), so the frame
 // is what a short game really looks like. The same seed always gives the same
 // frame (apart from cosmetic particle flicker).
 
-import { STEP, SHOT_SCENES, SCREENS, PLANE } from './config.js';
+import { STEP, SHOT_SCENES, SCREENS, PLANE, CAMERA } from './config.js';
 import { mulberry32 } from './rng.js';
 import { createRings, updateRings, getNextRing } from './rings.js';
 import { updateTerrain, checkTerrainCollision, checkRunwayLanding, getPadPosition } from './terrain.js';
+import { createCamera, updateCamera } from './render.js';
 
-/** Steer toward a point, climbing over any building in the way.
- *  The descent is kept shallow (vertical speed capped) and the plane pulls up
- *  hard when it gets low, so it does not dive into the rooftops. */
+/** One simulation step shared by all scenes. */
+function stepScene(game, input, dt) {
+  const { plane, planeView, syncPlaneView, terrain, rings, missions, wind, camera } = game;
+  game.time += dt;
+  updateTerrain(terrain, dt, game.time);
+
+  // Update camera (handles lightning, rain, dawn, wind)
+  const mission = missions.getMission();
+  updateCamera(camera, planeView, dt, mission.hasStorm, mission.hasDawn);
+
+  plane.step(dt, input.throttle, input.turn, input.brake, wind);
+  syncPlaneView();
+  const ringResult = updateRings(rings, planeView, dt, game.time, missions.getMissionProgress().missionId);
+  const hit = checkTerrainCollision(planeView, terrain);
+  if (hit.hit && hit.type !== 'ground' && hit.type !== 'sea') {
+    if (game.time > (stepScene.lastHitAt || 0) + 1) {
+      stepScene.lastHitAt = game.time;
+      plane.applyDamage(PLANE.damagePerHit);
+      plane.kick(hit.type === 'building' ? 0.9 : -0.9);
+      syncPlaneView();
+    }
+  }
+  missions.update(planeView, rings, terrain, dt, camera);
+  return { ringResult, hit };
+}
+
+function freshRings(game, missionId) {
+  game.rings = createRings(missionId, game.rng);
+  return game.rings;
+}
+
+/** Autopilot steering toward a target, avoiding obstacles. */
 export function autopilot(game, target, cruiseSpeed, dt) {
-  const { plane, planeView, terrain } = game;
+  const { plane, planeView, terrain, camera } = game;
   let tx = target.x;
   let ty = target.y;
 
-  // Obstacle avoidance steers at a NEAR waypoint above the obstacle, so the
-  // climb angle is steep enough to clear it in time (aiming at the far ring
-  // beyond the obstacle asks for a climb too shallow to make it).
+  // Obstacle avoidance steers at a NEAR waypoint above the obstacle
   const dirX = Math.cos(planeView.heading);
   for (const b of terrain.buildings) {
     const ahead = (b.x + b.width / 2 - planeView.x) * dirX;
@@ -34,9 +62,7 @@ export function autopilot(game, target, cruiseSpeed, dt) {
     }
   }
 
-  // Monas tower: a 420 ft column at x=640 — fly over its flame, never through it.
-  // Only when the plane is actually below the tower top (y > 200) and closing
-  // on the column; a plane already above it flies over freely.
+  // Monas tower: fly over its flame, never through it.
   const monasAhead = (terrain.monas.x - planeView.x) * dirX;
   if (monasAhead > 0 && monasAhead < 350 && planeView.y > 200) {
     tx = planeView.x + 250 * dirX;
@@ -44,9 +70,6 @@ export function autopilot(game, target, cruiseSpeed, dt) {
   }
 
   const dx = tx - planeView.x;
-  // Shallow descent: cap the vertical speed the steering asks for, and pull up
-  // hard when low — unless the target itself is low (a final-approach ring or
-  // the runway), in which case the descent is the point.
   let dy = ty - planeView.y;
   if (planeView.y > 470 && ty < 450) dy = -220;
   const dyCapped = Math.max(-180, Math.min(180, dy * 0.8));
@@ -56,40 +79,9 @@ export function autopilot(game, target, cruiseSpeed, dt) {
   while (err < -Math.PI) err += Math.PI * 2;
   const turn = Math.max(-1, Math.min(1, err * 2.4));
   const dist = Math.hypot(dx, dy);
-  // Proportional throttle: hold the cruise speed instead of banging full/zero.
   const throttle = Math.max(-1, Math.min(1, (cruiseSpeed - planeView.speed) / 80));
-  // Flare: on a slow final (pad / runway) brake inside 180 px so the plane
-  // arrives under landing speed instead of screaming in.
   const brake = dist < 180 && planeView.speed > 150 && cruiseSpeed <= 200;
   return { throttle, turn, brake };
-}
-
-/** One simulation step shared by all scenes. */
-function stepScene(game, input, dt) {
-  const { plane, planeView, syncPlaneView, terrain, rings, missions, wind } = game;
-  game.time += dt;
-  updateTerrain(terrain, dt, game.time);
-  plane.step(dt, input.throttle, input.turn, input.brake, wind);
-  syncPlaneView();
-  const ringResult = updateRings(rings, planeView, dt, game.time, missions.getMissionProgress().missionId);
-  const hit = checkTerrainCollision(planeView, terrain);
-  if (hit.hit && hit.type !== 'ground' && hit.type !== 'sea') {
-    // One hit per second at most — a graze across several frames is one hit,
-    // not an instant kill.
-    if (game.time > (stepScene.lastHitAt || 0) + 1) {
-      stepScene.lastHitAt = game.time;
-      plane.applyDamage(PLANE.damagePerHit);
-      plane.kick(hit.type === 'building' ? 0.9 : -0.9);
-      syncPlaneView();
-    }
-  }
-  missions.update(planeView, rings, terrain, dt, wind);
-  return { ringResult, hit };
-}
-
-function freshRings(game, missionId) {
-  game.rings = createRings(missionId, game.rng);
-  return game.rings;
 }
 
 /**
@@ -100,6 +92,7 @@ export function stageShot(name, game) {
   const { plane, planeView, syncPlaneView, terrain, missions, startMission } = game;
   game.time = 0;
   game.wind = { x: 0, y: 0, gustTimer: 0, gustAngle: 0, gustStrength: 0 };
+  game.camera = createCamera();
   let screen = SCREENS.PLAY;
   let screenData = {};
 
@@ -108,25 +101,60 @@ export function stageShot(name, game) {
     game.rings = freshRings(game, 0);
     plane.reset(0);
     syncPlaneView();
-    for (let i = 0; i < SHOT_SCENES.start / STEP; i += 1) {
+    for (let i = 0; i < SHOT_SCENES.start / STEP; i++) {
       const target = getNextRing(game.rings) || { x: 640, y: 300 };
       const input = autopilot(game, target, 280, STEP);
       stepScene(game, input, STEP);
     }
     screen = SCREENS.TITLE;
     return { time: game.time, screen, screenData, rings: game.rings };
+
+  }
+
+  if (name === 'cover') {
+    // Cover: Ring Run mission, plane close to camera, multiple rings ahead,
+    // Monas visible, runway lights in distance, storm clouds gathering.
+    startMission(0);
+    const cap = SHOT_SCENES.play;
+    for (let t = 0; t < cap / STEP; t++) {
+      const next = getNextRing(game.rings);
+      if (!next) break;
+      const input = autopilot(game, next, 280, STEP);
+      stepScene(game, input, STEP);
+      // Stop after 3rd ring passed so several rings and city stay ahead
+      if (missions.getMissionProgress().objectives.ringsPassed >= 3) break;
+    }
+    // Trigger a lightning flash for dramatic cover
+    game.camera.lightningFlash = 1;
+    game.camera.lightningBolts = [];
+    for (let i = 0; i < 2; i++) {
+      // Generate a couple of bolts
+      const startX = 200 + Math.random() * 400;
+      const segments = [];
+      let x = startX;
+      let y = 0;
+      const targetY = 500;
+      while (y < targetY) {
+        const segLength = 20 + Math.random() * 40;
+        const angle = (Math.random() - 0.5) * 0.8 + Math.PI / 2;
+        const nextX = x + Math.cos(angle) * segLength;
+        const nextY = y + Math.sin(angle) * segLength;
+        segments.push({ x1: x, y1: y, x2: nextX, y2: nextY });
+        x = nextX;
+        y = nextY;
+      }
+      game.camera.lightningBolts.push({ segments, age: 0, life: 0.15, intensity: 0.9 });
+    }
+    return { time: game.time, screen, screenData, rings: game.rings };
+
   }
 
   if (name === 'parcel') {
     // Parcel Drop: fly the rings from the normal spawn, then the pad.
-    // The last ring is flown slower (cruise 200, not 280) so the plane is
-    // already near delivery speed when it reaches the pad — otherwise it
-    // arrives at 285 px/s, sinks past the roof while braking, and clips
-    // the tower's edge for 15 damage on the delivery frame.
     startMission(1);
     const pad = getPadPosition(terrain);
     const cap = 26;
-    for (let t = 0; t < cap / STEP; t += 1) {
+    for (let t = 0; t < cap / STEP; t++) {
       const next = getNextRing(game.rings);
       const progress = missions.getMissionProgress();
       const isLastRing = !!next && progress.objectives.ringsPassed >= progress.objectives.ringsTotal - 1;
@@ -141,30 +169,31 @@ export function stageShot(name, game) {
   }
 
   if (name === 'landing') {
-    // Storm Return: start east of the runway, fly the rings, then final approach.
-    startMission(2);
-    plane.place(1050, 210, Math.PI);
+    // Dawn Landing (mission 3): start east of the runway, fly the rings, then final approach.
+    startMission(3);
+    plane.place(1050, 200, Math.PI);
     syncPlaneView();
     const runway = { x: 190, y: terrain.groundY - 14 };
     const cap = 30;
-    for (let t = 0; t < cap / STEP; t += 1) {
+    for (let t = 0; t < cap / STEP; t++) {
       const next = getNextRing(game.rings);
       const target = next || runway;
-      const cruise = next ? 280 : 200;
+      const cruise = next ? 260 : 180;
       const input = autopilot(game, target, cruise, STEP);
       stepScene(game, input, STEP);
       const dist = Math.hypot(planeView.x - runway.x, planeView.y - runway.y);
       if (!next && dist < 170) break;
       if (missions.getMissionProgress().objectives.landed) break;
     }
+    // Advance dawn progress for the screenshot
+    game.camera.dawnProgress = 0.6;
     return { time: game.time, screen, screenData, rings: game.rings };
   }
 
-  // Default: cover — Ring Run, stop after the third ring so several rings
-  // and the city stay ahead of the plane.
+  // Default: cover
   startMission(0);
   const cap = SHOT_SCENES.play;
-  for (let t = 0; t < cap / STEP; t += 1) {
+  for (let t = 0; t < cap / STEP; t++) {
     const next = getNextRing(game.rings);
     if (!next) break;
     const input = autopilot(game, next, 280, STEP);

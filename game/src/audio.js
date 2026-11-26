@@ -1,4 +1,4 @@
-// WebAudio sound engine for Jakarta Night Courier.
+// WebAudio sound engine for Jakarta Night Courier — Storm Run.
 // All sounds synthesized programmatically — no external audio files.
 
 let audioContext = null;
@@ -84,7 +84,7 @@ export function updateWindSound(windSpeed, active) {
   if (!initialized || !windGain) return;
 
   if (active && windSpeed > 5) {
-    const gain = Math.min(0.2, windSpeed / 200);
+    const gain = Math.min(0.25, windSpeed / 180);
     windGain.gain.setTargetAtTime(gain, audioContext.currentTime, 0.2);
   } else {
     windGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.5);
@@ -115,6 +115,104 @@ export function playTone(frequency, duration, type = 'sine', volume = 0.15, star
 /** Play a chord (multiple tones). */
 export function playChord(frequencies, duration, type = 'sine', volume = 0.1) {
   frequencies.forEach((f, i) => playTone(f, duration, type, volume, i * 0.02));
+}
+
+/** Play thunder sound — low rumble with crack. */
+export function playThunder(intensity = 0.7) {
+  if (!initialized || !audioContext) return;
+
+  try {
+    const now = audioContext.currentTime;
+    const duration = 2.0 + intensity * 2.0; // 2-4 seconds
+
+    // Close crack (if intense)
+    if (intensity > 0.6) {
+      const crackOsc = audioContext.createOscillator();
+      const crackGain = audioContext.createGain();
+      const crackFilter = audioContext.createBiquadFilter();
+      crackOsc.type = 'square';
+      crackOsc.frequency.value = 120;
+      crackFilter.type = 'highpass';
+      crackFilter.frequency.value = 80;
+      crackGain.gain.value = intensity * 0.15;
+      crackOsc.connect(crackFilter).connect(crackGain).connect(masterGain);
+      crackOsc.start(now);
+      crackGain.gain.setTargetAtTime(0, now + 0.05, 0.03);
+      crackOsc.stop(now + 0.15);
+    }
+
+    // Main rumble — filtered noise
+    const rumbleBuffer = audioContext.createBuffer(1, audioContext.sampleRate * duration, audioContext.sampleRate);
+    const rumbleData = rumbleBuffer.getChannelData(0);
+    for (let i = 0; i < rumbleData.length; i++) {
+      // Low-frequency biased noise
+      rumbleData[i] = (Math.random() * 2 - 1) * Math.exp(-i / (audioContext.sampleRate * 0.5));
+    }
+    const rumbleSource = audioContext.createBufferSource();
+    rumbleSource.buffer = rumbleBuffer;
+    const rumbleGain = audioContext.createGain();
+    const rumbleFilter = audioContext.createBiquadFilter();
+    rumbleFilter.type = 'lowpass';
+    rumbleFilter.frequency.value = 120;
+    rumbleFilter.Q.value = 1.5;
+    rumbleGain.gain.value = intensity * 0.12;
+    rumbleSource.connect(rumbleFilter).connect(rumbleGain).connect(masterGain);
+    rumbleSource.start(now);
+    rumbleGain.gain.setTargetAtTime(0, now + duration * 0.3, duration * 0.5);
+    rumbleSource.stop(now + duration);
+
+    // Distant rolling thunder — slower oscillation
+    const rollOsc = audioContext.createOscillator();
+    const rollGain = audioContext.createGain();
+    const rollFilter = audioContext.createBiquadFilter();
+    rollOsc.type = 'sine';
+    rollOsc.frequency.value = 35;
+    rollFilter.type = 'lowpass';
+    rollFilter.frequency.value = 60;
+    rollGain.gain.value = intensity * 0.06;
+    rollOsc.connect(rollFilter).connect(rollGain).connect(masterGain);
+    rollOsc.start(now + 0.3);
+    rollGain.gain.setTargetAtTime(0, now + duration * 0.5, duration * 0.7);
+    rollOsc.stop(now + duration);
+  } catch (e) {
+    // Ignore
+  }
+}
+
+/** Play lightning crack (close strike). */
+export function playLightningCrack() {
+  if (!initialized || !audioContext) return;
+
+  try {
+    const now = audioContext.currentTime;
+    // Sharp crack
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    const filter = audioContext.createBiquadFilter();
+    osc.type = 'square';
+    osc.frequency.value = 200;
+    filter.type = 'bandpass';
+    filter.frequency.value = 800;
+    filter.Q.value = 3;
+    gain.gain.value = 0.1;
+    osc.connect(filter).connect(gain).connect(masterGain);
+    osc.start(now);
+    gain.gain.setTargetAtTime(0, now + 0.02, 0.01);
+    osc.stop(now + 0.08);
+
+    // High-frequency snap
+    const snapOsc = audioContext.createOscillator();
+    const snapGain = audioContext.createGain();
+    snapOsc.type = 'sawtooth';
+    snapOsc.frequency.value = 2000;
+    snapGain.gain.value = 0.05;
+    snapOsc.connect(snapGain).connect(masterGain);
+    snapOsc.start(now);
+    snapGain.gain.setTargetAtTime(0, now + 0.01, 0.005);
+    snapOsc.stop(now + 0.03);
+  } catch (e) {
+    // Ignore
+  }
 }
 
 /** Predefined sound effects. */

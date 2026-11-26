@@ -1,18 +1,18 @@
-// Jakarta Night Courier — game loop, screens and wiring.
+// Jakarta Night Courier — Storm Run: game loop, screens and wiring.
 // Owns the canvas, the fixed-step loop, the screen state machine (title,
 // mission select, briefing, play, paused, complete, game over) and the wiring
-// between plane, terrain, rings, missions, HUD, audio and the renderer.
+// between plane, terrain, rings, missions, HUD, audio, camera and the renderer.
 
-import { FIELD, STEP, MAX_FRAME, SCREENS, MISSIONS, PLANE, STORAGE_KEY } from './config.js';
+import { FIELD, STEP, MAX_FRAME, SCREENS, MISSIONS, PLANE, STORAGE_KEY, CAMERA, MISSION_STATE } from './config.js';
 import { mulberry32 } from './rng.js';
 import { createPlane } from './plane.js';
 import { createTerrain, updateTerrain, checkTerrainCollision, checkRunwayLanding } from './terrain.js';
 import { createRings, updateRings, getNextRing } from './rings.js';
-import { createMissionManager, MISSION_STATE } from './missions.js';
+import { createMissionManager } from './missions.js';
 import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_MISSION_NEXT, ACTION_MISSION_PREV } from './input.js';
 import { drawHUD } from './hud.js';
-import { drawWorld } from './render.js';
-import { initAudio, resumeAudio, updateEngineSound, updateWindSound, SFX } from './audio.js';
+import { drawWorld, createCamera, updateCamera, shakeCamera, consumeThunder, getCameraTransform } from './render.js';
+import { initAudio, resumeAudio, updateEngineSound, updateWindSound, SFX, playThunder, playLightningCrack } from './audio.js';
 import { stageShot } from './shots.js';
 
 const canvas = document.getElementById('game');
@@ -30,6 +30,7 @@ const terrain = createTerrain(rng);
 const plane = createPlane(rng);
 const missions = createMissionManager(rng);
 const input = createInput(canvas);
+const camera = createCamera();
 
 // A persistent view of the plane: getState() returns a fresh object every call,
 // so we merge into this one and keep prevX/prevY (ring crossing) alive, plus
@@ -45,7 +46,7 @@ function syncPlaneView() {
 syncPlaneView();
 
 let rings = [];
-let wind = { x: 0, y: 0, gustTimer: 0, gustAngle: 0, gustStrength: 0 };
+let wind = { x: 0, y: 0 };
 let screen = SCREENS.TITLE;
 let screenData = {};
 let selectedMission = 0;
@@ -53,8 +54,6 @@ let time = 0;
 let totalScore = 0;
 let bestScores = loadBest();
 let eventFeed = [];
-let shakeUntil = 0;
-let shakeMag = 0;
 let lastClick = null;
 let fuelWarned = false;
 let audioStarted = false;
@@ -104,22 +103,23 @@ function pushEvent(type, message) {
   if (eventFeed.length > 3) eventFeed.length = 3;
 }
 
-function shake(mag, seconds) {
-  shakeMag = mag;
-  shakeUntil = time + seconds;
-}
-
 function startMission(missionId) {
   missions.selectMission(missionId);
   plane.reset(missionId);
   syncPlaneView();
+
   if (missionId === 2) {
     // Storm Return starts east of the city, flying home to the runway.
     plane.place(1000, 220, Math.PI);
     syncPlaneView();
+  } else if (missionId === 3) {
+    // Dawn Landing starts further east, higher, on final approach course.
+    plane.place(1050, 200, Math.PI);
+    syncPlaneView();
   }
+
   rings = createRings(missionId, rng);
-  wind = { x: 0, y: 0, gustTimer: 0, gustAngle: 0, gustStrength: 0 };
+  wind = { x: 0, y: 0 };
   missions.startMission(planeView);
   totalScore = 0;
   eventFeed = [];
@@ -138,17 +138,41 @@ function stepPlay(dt) {
   time += dt;
   updateTerrain(terrain, dt, time);
 
+  // Update camera (includes lightning, rain, dawn, wind)
+  const mission = missions.getMission();
+  updateCamera(camera, planeView, dt, mission.hasStorm, mission.hasDawn);
+
+  // Consume thunder from camera
+  const thunderIntensity = consumeThunder(camera);
+  if (thunderIntensity > 0) {
+    playThunder(thunderIntensity);
+  }
+
+  // Lightning crack sound (close strikes)
+  if (camera.lightningFlash === 1 && camera.lightningBolts.length > 0) {
+    // Only play crack on the first frame of a flash
+    if (!camera._lastFlashPlayed) {
+      playLightningCrack();
+      camera._lastFlashPlayed = true;
+    }
+  } else {
+    camera._lastFlashPlayed = false;
+  }
+
   const throttleInput = input.throttle();
   const turnInput = input.turn();
   const brake = input.brake();
   const result = plane.step(dt, throttleInput, turnInput, brake, wind);
   syncPlaneView();
+
+  // Apply storm wind to plane (handled in plane.step via wind parameter)
+  // Update engine and wind audio
   updateEngineSound(planeView.throttle, planeView.speed, PLANE.maxSpeed, planeView.damage > 50);
-  updateWindSound(Math.hypot(wind.x, wind.y), missions.getMission().hasStorm);
+  updateWindSound(Math.hypot(wind.x, wind.y), mission.hasStorm);
 
   // Rings
   const ringResult = updateRings(rings, planeView, dt, time, missions.getMissionProgress().missionId);
-  for (let i = 0; i < ringResult.ringsPassed; i += 1) {
+  for (let i = 0; i < ringResult.ringsPassed; i++) {
     SFX.ringPass();
     pushEvent('ring', `RING ${missions.getMissionProgress().objectives.ringsPassed}/${missions.getMission().ringCount}`);
   }
@@ -156,7 +180,7 @@ function stepPlay(dt) {
     plane.applyDamage(PLANE.damagePerRingClip * ringResult.ringPostHits);
     syncPlaneView();
     SFX.ringHit();
-    shake(6, 0.3);
+    shakeCamera(camera, 6, 0.3);
     pushEvent('hit', 'CLIPPED A RING POST');
   }
 
@@ -166,10 +190,7 @@ function stepPlay(dt) {
     const landing = checkRunwayLanding(planeView, terrain);
     if (hit.type === 'ground' || hit.type === 'sea') {
       if (landing.onRunway) {
-        // Touchdown on the strip: Storm Return scores it (good or hard) in the
-        // mission update below, and a plane already down just rolls. The other
-        // missions end the sortie here — gently if the approach was good.
-        if (missions.getMissionProgress().missionId === 2) {
+        if (missions.getMissionProgress().missionId === 2 || missions.getMissionProgress().missionId === 3) {
           // Let the mission update below register the landing.
         } else if (landing.goodApproach) {
           endMission(false, 'Landed safely on the runway', false);
@@ -189,7 +210,7 @@ function stepPlay(dt) {
         const destroyed = plane.applyDamage(PLANE.damagePerHit);
         syncPlaneView();
         SFX.impact();
-        shake(10, 0.4);
+        shakeCamera(camera, 10, 0.4);
         plane.kick(hit.type === 'building' ? 0.9 : -0.9);
         syncPlaneView();
         pushEvent('hit', hit.type === 'monas' ? 'HIT MONAS TOWER' : 'HIT A BUILDING');
@@ -210,27 +231,37 @@ function stepPlay(dt) {
   if (planeView.fuel >= 20) fuelWarned = false;
 
   // Mission rules (fuel, damage, time, rings, pad, landing, completion)
-  const missionResult = missions.update(planeView, rings, terrain, dt, wind);
+  const missionResult = missions.update(planeView, rings, terrain, dt, camera);
   totalScore += missionResult.score || 0;
+
+  // Handle thunder from mission result
+  if (missionResult.thunderIntensity) {
+    playThunder(missionResult.thunderIntensity);
+  }
+  if (missionResult.lightning) {
+    // Lightning crack will be played by camera update
+  }
+
   for (const event of missionResult.events || []) {
     pushEvent(event.type, event.message);
     if (event.type === 'ring') SFX.ringPass();
     else if (event.type === 'delivery') SFX.delivery();
-    else if (event.type === 'landing' || event.type === 'hard_landing') SFX.touchdown();
+    else if (event.type === 'landing' || event.type === 'hard_landing' || event.type === 'perfect_landing') SFX.touchdown();
   }
+
   if (missionResult.complete) {
-    const mission = missions.getMission();
+    const m = missions.getMission();
     const id = missions.getMissionProgress().missionId;
     const best = Math.max(bestScores[id] || 0, totalScore);
     bestScores[id] = best;
     saveBest();
     SFX.missionComplete();
     setScreen(SCREENS.MISSION_COMPLETE, {
-      missionName: mission.name,
+      missionName: m.name,
       score: totalScore,
       totalScore: best,
     });
-    setStatus(`Mission complete: ${mission.name}. Score ${totalScore}.`);
+    setStatus(`Mission complete: ${m.name}. Score ${totalScore}.`);
     return;
   }
   if (missionResult.failed) {
@@ -245,10 +276,9 @@ function endMission(crashed, reason, withSound) {
   bestScores[id] = best;
   saveBest();
   if (crashed && withSound) {
-    SFX.crash();
     SFX.missionFailed();
   }
-  shake(8, 0.5);
+  shakeCamera(camera, 8, 0.5);
   setScreen(SCREENS.GAME_OVER, {
     reason,
     score: totalScore,
@@ -269,14 +299,14 @@ function stepAttract(dt) {
   plane.step(dt, autopilot.throttle, autopilot.turn, autopilot.brake, wind);
   syncPlaneView();
   updateRings(rings, planeView, dt, time, 0);
+
+  // Update camera for attract mode (no storm, no dawn)
+  updateCamera(camera, planeView, dt, false, false);
 }
 
 /** Steering helper shared by attract mode and screenshot staging. */
 export function steerToward(target, cruiseSpeed) {
   const dx = target.x - planeView.x;
-  // Shallow descent: cap the vertical speed the steering asks for, and pull up
-  // hard when low — unless the target itself is low (a final-approach ring or
-  // the runway), in which case the descent is the point.
   let dy = target.y - planeView.y;
   if (planeView.y > 470 && target.y < 450) dy = -220;
   const dyCapped = Math.max(-180, Math.min(180, dy * 0.8));
@@ -286,7 +316,6 @@ export function steerToward(target, cruiseSpeed) {
   while (err < -Math.PI) err += Math.PI * 2;
   const turn = Math.max(-1, Math.min(1, err * 2.2));
   const dist = Math.hypot(dx, dy);
-  // Proportional throttle: hold the cruise speed instead of banging full/zero.
   const throttle = Math.max(-1, Math.min(1, (cruiseSpeed - planeView.speed) / 80));
   const brake = dist < 180 && planeView.speed > 150 && cruiseSpeed <= 200;
   return { throttle, turn, brake };
@@ -332,8 +361,7 @@ function handleActions(actions) {
       setStatus(`Briefing: ${MISSIONS[selectedMission].name}.`);
     }
     if (lastClick) {
-      // Click a mission card to pick it straight away.
-      for (let i = 0; i < MISSIONS.length; i += 1) {
+      for (let i = 0; i < MISSIONS.length; i++) {
         const cardY = FIELD.height / 2 - 40 + i * 80;
         const cardX = FIELD.width / 2 - 300;
         if (lastClick.x >= cardX && lastClick.x <= cardX + 600 && lastClick.y >= cardY && lastClick.y <= cardY + 65) {
@@ -376,12 +404,15 @@ function handleActions(actions) {
 
 function render() {
   ctx.save();
-  if (time < shakeUntil && shakeMag > 0) {
-    ctx.translate((Math.random() - 0.5) * shakeMag, (Math.random() - 0.5) * shakeMag);
+  if (time < camera.shakeUntil && camera.shakeMag > 0) {
+    ctx.translate((Math.random() - 0.5) * camera.shakeMag, (Math.random() - 0.5) * camera.shakeMag);
   }
+
   const missionId = missions.getMissionProgress().missionId;
   const storm = screen === SCREENS.PLAY && missions.getMission().hasStorm;
-  drawWorld(ctx, terrain, rings, planeView, time, missionId, storm);
+  const hasDawn = screen === SCREENS.PLAY && missions.getMission().hasDawn;
+
+  drawWorld(ctx, camera, terrain, rings, planeView, time, missionId, storm, hasDawn);
   ctx.restore();
 
   // Event feed (top-left, under the instruments)
@@ -427,7 +458,6 @@ function frame(timestamp) {
   const actions = input.takeActions();
   handleActions(actions);
   if (actions & ACTION_CONFIRM) {
-    // Confirm clicks also start audio on first interaction.
     startAudioOnce();
   }
 
@@ -450,13 +480,10 @@ function frame(timestamp) {
 plane.reset(0);
 syncPlaneView();
 rings = createRings(0, rng);
-setStatus('Jakarta Night Courier. Press Space or click to begin.');
+setStatus('Jakarta Night Courier — Storm Run. Press Space or click to begin.');
 
 if (SHOT_MODE) {
   // Deterministic screenshot scene: stage the world, freeze it, render once.
-  // rings/time/wind are live accessors: startMission() reassigns the module
-  // variables, and a plain object literal would freeze the boot values (the
-  // parcel/landing scenes then chased the wrong rings and died in the city).
   const game = {
     plane, planeView, syncPlaneView, terrain, missions, startMission, setScreen, steerToward, rng,
     get rings() { return rings; },

@@ -1,17 +1,9 @@
-// Mission logic for Jakarta Night Courier.
+// Mission logic for Jakarta Night Courier — Storm Run.
 // Manages mission state, objectives, scoring, and win/lose conditions.
 
-import { MISSIONS, PLANE, RUNWAY, PAD, STORM } from './config.js';
+import { MISSIONS, PLANE, RUNWAY, PAD, STORM, LIGHTNING, MISSION_STATE } from './config.js';
 import { checkRunwayLanding, checkPadDrop } from './terrain.js';
 import { getNextRing, getDistanceToNextRing } from './rings.js';
-
-export const MISSION_STATE = {
-  NOT_STARTED: 'not_started',
-  BRIEFING: 'briefing',
-  IN_PROGRESS: 'in_progress',
-  COMPLETE: 'complete',
-  FAILED: 'failed',
-};
 
 export function createMissionManager(random) {
   let currentMissionId = 0;
@@ -21,6 +13,10 @@ export function createMissionManager(random) {
   let missionStartTime = 0;
   let objectives = {};
   let completedMissions = new Set();
+  let ringCombo = 0;          // Consecutive rings without hitting posts
+  let lastRingTime = 0;       // Time since last ring for combo
+  let stormWind = { x: 0, y: 0, gustTimer: 0, gustAngle: 0, gustStrength: 0 };
+  let lightningTimer = 0;
 
   function getMission() {
     return MISSIONS[currentMissionId];
@@ -36,8 +32,10 @@ export function createMissionManager(random) {
     const mission = getMission();
     state = MISSION_STATE.IN_PROGRESS;
     missionTimer = mission.timeLimit;
-    missionStartTime = 0; // Will be set by world
+    missionStartTime = 0;
     score = 0;
+    ringCombo = 0;
+    lastRingTime = 0;
     objectives = {
       ringsPassed: 0,
       ringsTotal: mission.ringCount,
@@ -47,9 +45,10 @@ export function createMissionManager(random) {
       crashed: false,
       timeUp: false,
     };
-    // Reset plane for mission
     plane.refuel();
     plane.repair();
+    stormWind = { x: 0, y: 0, gustTimer: 0, gustAngle: 0, gustStrength: 0 };
+    lightningTimer = 0;
     return mission;
   }
 
@@ -57,7 +56,7 @@ export function createMissionManager(random) {
     state = MISSION_STATE.BRIEFING;
   }
 
-  function update(plane, rings, terrain, dt, wind) {
+  function update(plane, rings, terrain, dt, camera) {
     if (state !== MISSION_STATE.IN_PROGRESS) return { state, score: 0, complete: false, failed: false, reason: null };
 
     const mission = getMission();
@@ -71,6 +70,9 @@ export function createMissionManager(random) {
       failed: false,
       reason: null,
       events: [],
+      wind: { x: 0, y: 0 },
+      lightning: false,
+      thunderIntensity: 0,
     };
 
     // Check fuel
@@ -103,6 +105,21 @@ export function createMissionManager(random) {
       return results;
     }
 
+    // Update storm wind and lightning for storm missions
+    if (mission.hasStorm) {
+      updateStormWind(stormWind, dt);
+      results.wind = { x: stormWind.x, y: stormWind.y };
+
+      // Lightning timer
+      lightningTimer -= dt;
+      if (lightningTimer <= 0) {
+        lightningTimer = LIGHTNING.flashInterval.min + Math.random() * (LIGHTNING.flashInterval.max - LIGHTNING.flashInterval.min);
+        results.lightning = true;
+        // Thunder will be handled by camera, but we can signal intensity here
+        results.thunderIntensity = 0.5 + Math.random() * 0.5;
+      }
+    }
+
     // Mission-specific logic
     if (currentMissionId === 0) { // Ring Run
       results.score += updateRingRun(plane, rings, mission, results, dt);
@@ -110,11 +127,8 @@ export function createMissionManager(random) {
       results.score += updateParcelDrop(plane, rings, terrain, mission, results);
     } else if (currentMissionId === 2) { // Storm Return
       results.score += updateStormReturn(plane, rings, terrain, mission, results);
-    }
-
-    // Update wind for storm mission
-    if (mission.hasStorm) {
-      updateStormWind(wind, dt);
+    } else if (currentMissionId === 3) { // Dawn Landing
+      results.score += updateDawnLanding(plane, rings, terrain, mission, results);
     }
 
     // Check mission completion
@@ -126,7 +140,6 @@ export function createMissionManager(random) {
       completedMissions.add(currentMissionId);
     }
 
-    // Bank the frame's score so the HUD (and the mission summary) shows it.
     score += results.score;
     results.state = state;
     return results;
@@ -142,6 +155,17 @@ export function createMissionManager(random) {
         addedScore += mission.scorePerRing;
         objectives.ringsPassed++;
         results.events.push({ type: 'ring', message: `RING ${objectives.ringsPassed}/${objectives.ringsTotal} — +${mission.scorePerRing}` });
+
+        // Combo system: consecutive rings within 10 seconds
+        const now = missionStartTime;
+        if (now - lastRingTime < 10) {
+          ringCombo++;
+          addedScore += ringCombo * 50;
+          results.events.push({ type: 'combo', message: `COMBO x${ringCombo} — +${ringCombo * 50}` });
+        } else {
+          ringCombo = 1;
+        }
+        lastRingTime = now;
       }
     }
 
@@ -150,7 +174,7 @@ export function createMissionManager(random) {
     if (nextRing) {
       const dist = getDistanceToNextRing(plane, rings);
       if (dist < 300 && plane.speed > 280 && plane.speed < 400) {
-        addedScore += 5 * dt; // Small continuous bonus
+        addedScore += 5 * dt;
       }
     }
 
@@ -167,6 +191,16 @@ export function createMissionManager(random) {
         addedScore += mission.scorePerRing;
         objectives.ringsPassed++;
         results.events.push({ type: 'ring', message: `RING ${objectives.ringsPassed}/${objectives.ringsTotal} — +${mission.scorePerRing}` });
+
+        const now = missionStartTime;
+        if (now - lastRingTime < 10) {
+          ringCombo++;
+          addedScore += ringCombo * 50;
+          results.events.push({ type: 'combo', message: `COMBO x${ringCombo} — +${ringCombo * 50}` });
+        } else {
+          ringCombo = 1;
+        }
+        lastRingTime = now;
       }
     }
 
@@ -193,6 +227,16 @@ export function createMissionManager(random) {
         addedScore += mission.scorePerRing;
         objectives.ringsPassed++;
         results.events.push({ type: 'ring', message: `RING ${objectives.ringsPassed}/${objectives.ringsTotal} — +${mission.scorePerRing}` });
+
+        const now = missionStartTime;
+        if (now - lastRingTime < 10) {
+          ringCombo++;
+          addedScore += ringCombo * 50;
+          results.events.push({ type: 'combo', message: `COMBO x${ringCombo} — +${ringCombo * 50}` });
+        } else {
+          ringCombo = 1;
+        }
+        lastRingTime = now;
       }
     }
 
@@ -205,11 +249,60 @@ export function createMissionManager(random) {
           addedScore += mission.landingBonus;
           results.events.push({ type: 'landing', message: `PERFECT LANDING — +${mission.landingBonus}` });
         } else {
-          // Hard landing - damage but counts
           objectives.landed = true;
           plane.applyDamage(20);
           addedScore += Math.floor(mission.landingBonus * 0.5);
           results.events.push({ type: 'hard_landing', message: `HARD LANDING — +${Math.floor(mission.landingBonus * 0.5)} (damage +20)` });
+        }
+      }
+    }
+
+    return addedScore;
+  }
+
+  function updateDawnLanding(plane, rings, terrain, mission, results) {
+    let addedScore = 0;
+
+    // Score for passing rings
+    for (const ring of rings) {
+      if (ring.passed && !ring.scored) {
+        ring.scored = true;
+        addedScore += mission.scorePerRing;
+        objectives.ringsPassed++;
+        results.events.push({ type: 'ring', message: `RING ${objectives.ringsPassed}/${objectives.ringsTotal} — +${mission.scorePerRing}` });
+
+        const now = missionStartTime;
+        if (now - lastRingTime < 10) {
+          ringCombo++;
+          addedScore += ringCombo * 50;
+          results.events.push({ type: 'combo', message: `COMBO x${ringCombo} — +${ringCombo * 50}` });
+        } else {
+          ringCombo = 1;
+        }
+        lastRingTime = now;
+      }
+    }
+
+    // Check landing (stricter for dawn landing — bonus for perfection)
+    if (!objectives.landed) {
+      const landing = checkRunwayLanding(plane, terrain);
+      if (landing.onRunway) {
+        if (landing.goodApproach) {
+          objectives.landed = true;
+          // Perfect landing bonus: speed < 110, descent < 30, level
+          const perfect = plane.speed < 110 && Math.abs(plane.vy) < 30 && Math.abs(plane.pitch) < 0.08 && Math.abs(plane.roll) < 0.08;
+          if (perfect) {
+            addedScore += mission.landingBonus + 2000;
+            results.events.push({ type: 'perfect_landing', message: `PERFECT DAWN LANDING — +${mission.landingBonus + 2000}` });
+          } else {
+            addedScore += mission.landingBonus;
+            results.events.push({ type: 'landing', message: `GOOD LANDING — +${mission.landingBonus}` });
+          }
+        } else {
+          objectives.landed = true;
+          plane.applyDamage(25);
+          addedScore += Math.floor(mission.landingBonus * 0.4);
+          results.events.push({ type: 'hard_landing', message: `ROUGH LANDING — +${Math.floor(mission.landingBonus * 0.4)} (damage +25)` });
         }
       }
     }
@@ -224,13 +317,14 @@ export function createMissionManager(random) {
       return objectives.parcelDelivered && objectives.ringsPassed >= objectives.ringsTotal;
     } else if (currentMissionId === 2) {
       return objectives.landed && objectives.ringsPassed >= objectives.ringsTotal;
+    } else if (currentMissionId === 3) {
+      return objectives.landed && objectives.ringsPassed >= objectives.ringsTotal;
     }
     return false;
   }
 
-  /** Update storm wind for mission 3. */
   function updateStormWind(wind, dt) {
-    wind.gustTimer = (wind.gustTimer || 0) - dt;
+    wind.gustTimer -= dt;
     if (wind.gustTimer <= 0) {
       wind.gustTimer = STORM.gustInterval;
       wind.gustAngle = Math.random() * Math.PI * 2;
@@ -238,6 +332,9 @@ export function createMissionManager(random) {
     }
     wind.x = Math.cos(wind.gustAngle) * wind.gustStrength;
     wind.y = Math.sin(wind.gustAngle) * wind.gustStrength;
+    // Add turbulence
+    wind.x += (Math.random() - 0.5) * STORM.turbulence * 1000 * dt;
+    wind.y += (Math.random() - 0.5) * STORM.turbulence * 1000 * dt;
   }
 
   function getMissionProgress() {
@@ -251,16 +348,12 @@ export function createMissionManager(random) {
       timeRemaining: Math.max(0, missionTimer),
       objectives: { ...objectives },
       completed: completedMissions.has(currentMissionId),
+      hasStorm: mission.hasStorm,
+      hasDawn: mission.hasDawn,
     };
   }
 
   function getTotalScore() {
-    // Sum of best scores for each completed mission
-    let total = 0;
-    for (const mid of completedMissions) {
-      // In a real game, we'd store best per mission
-      // For now, just return current session score
-    }
     return score;
   }
 

@@ -62,6 +62,7 @@ export const MISSIONS = [
     ringCount: 8,
     hasParcel: false,
     hasStorm: false,
+    hasDawn: false,
     timeLimit: 120,
     scorePerRing: 500,
     completionBonus: 2000,
@@ -73,6 +74,7 @@ export const MISSIONS = [
     ringCount: 4,
     hasParcel: true,
     hasStorm: false,
+    hasDawn: false,
     timeLimit: 180,
     scorePerRing: 300,
     deliveryBonus: 3000,
@@ -81,14 +83,28 @@ export const MISSIONS = [
   {
     id: 2,
     name: 'Storm Return',
-    briefing: 'Land on the runway before fuel runs out. The storm pushes you — correct constantly.',
+    briefing: 'Navigate through the storm to the runway. Lightning reveals the city; wind gusts push you off course.',
     ringCount: 6,
     hasParcel: false,
     hasStorm: true,
+    hasDawn: false,
     timeLimit: 300,
     scorePerRing: 400,
     landingBonus: 5000,
     completionBonus: 3000,
+  },
+  {
+    id: 3,
+    name: 'Dawn Landing',
+    briefing: 'Final approach at dawn. The storm clears, the sky lightens — land perfectly on the runway.',
+    ringCount: 4,
+    hasParcel: false,
+    hasStorm: false,
+    hasDawn: true,
+    timeLimit: 180,
+    scorePerRing: 600,
+    landingBonus: 8000,
+    completionBonus: 5000,
   },
 ];
 
@@ -133,6 +149,7 @@ export const RINGS = {
     { primary: '#00ffff', glow: '#0088ff' },    // Mission 0 - cyan
     { primary: '#ffcc00', glow: '#ff8800' },    // Mission 1 - gold
     { primary: '#ff4488', glow: '#ff0066' },    // Mission 2 - magenta
+    { primary: '#ffaa00', glow: '#ff8800' },    // Mission 3 - dawn orange
   ],
   /** Ring vertical variation range. */
   yVariation: 120,
@@ -167,6 +184,16 @@ export const STORM = {
   turbulence: 0.02,       // Random angular perturbation per second
 };
 
+/** Lightning constants. */
+export const LIGHTNING = {
+  flashInterval: { min: 3, max: 8 },    // Seconds between flashes
+  flashDuration: 0.15,                   // How long a flash lasts (seconds)
+  thunderDelay: { min: 0.5, max: 2.5 },  // Delay from flash to thunder (seconds)
+  maxBolts: 3,                           // Max simultaneous bolts
+  boltWidth: 3,                          // Main bolt width
+  branchProbability: 0.3,                // Chance of a branch per segment
+};
+
 /** HUD and UI constants. */
 export const HUD = {
   font: 'system-ui, -apple-system, "Segoe UI", sans-serif',
@@ -186,9 +213,12 @@ export const PALETTE = {
   skyTop: '#050814',
   skyMid: '#0a1020',
   skyHorizon: '#101830',
+  skyDawn: '#2a1a3a',        // Dawn sky (purple-pink)
+  skyDawnHorizon: '#ff6b35', // Dawn horizon orange
   seaTop: '#030612',
   seaMid: '#060c1a',
   seaSurface: '#081224',
+  seaDawn: '#3a2a4a',        // Dawn sea reflection
   buildingDark: '#0d1420',
   buildingMid: '#141e30',
   buildingLight: '#1a2840',
@@ -203,6 +233,9 @@ export const PALETTE = {
   runwayEdge: '#ff4444',
   padGlow: '#00ff88',
   contrailColor: 'rgba(255,255,255,0.15)',
+  lightningCore: '#ffffff',   // Lightning core white
+  lightningGlow: '#88ccff',   // Lightning blue glow
+  thunderCloud: '#1a1a2e',    // Dark storm cloud
 };
 
 /** Where the best scores are kept between visits (this browser only). */
@@ -227,6 +260,31 @@ export const AUTOPILOT = {
   targetSpeed: 320,
   approachSpeed: 160,
   landingSpeed: 110,
+};
+
+/** Camera constants — chase view distance controls how large the plane appears. */
+export const CAMERA = {
+  /** Base chase distance (pixels behind plane). Smaller = plane larger in frame. */
+  chaseDistance: 120,         // v1 was ~300; this makes plane ~2.5x larger
+  /** Vertical offset from plane center (pixels). Positive = camera above plane. */
+  verticalOffset: -30,        // Slightly below plane center for dramatic angle
+  /** Look-ahead distance (pixels ahead of plane). */
+  lookAhead: 80,
+  /** Camera smoothing (0-1, lower = smoother). */
+  smoothing: 0.08,
+  /** Minimum distance clamp. */
+  minDistance: 80,
+  /** Maximum distance clamp. */
+  maxDistance: 200,
+};
+
+/** Mission state machine. */
+export const MISSION_STATE = {
+  NOT_STARTED: 'not_started',
+  BRIEFING: 'briefing',
+  IN_PROGRESS: 'in_progress',
+  COMPLETE: 'complete',
+  FAILED: 'failed',
 };
 
 export const SCREENS = {
