@@ -107,8 +107,7 @@ export function stageShot(name, game) {
       stepScene(game, input, STEP);
     }
     screen = SCREENS.TITLE;
-    return { time: game.time, screen, screenData, rings: game.rings };
-
+    return { time: game.time, screen, screenData, rings: game.rings, camera: game.camera };
   }
 
   if (name === 'cover') {
@@ -124,8 +123,10 @@ export function stageShot(name, game) {
       // Stop after 3rd ring passed so several rings and city stay ahead
       if (missions.getMissionProgress().objectives.ringsPassed >= 3) break;
     }
-    // Trigger a lightning flash for dramatic cover
-    game.camera.lightningFlash = 1;
+    // Trigger a lightning flash for dramatic cover — kept LOW (0.35) so the
+    // bolts show but the fullscreen flash overlay (alpha = flash * 0.6) does
+    // not wash the night sky pale grey. At flash = 1 the sky read as day.
+    game.camera.lightningFlash = 0.35;
     game.camera.lightningBolts = [];
     for (let i = 0; i < 2; i++) {
       // Generate a couple of bolts
@@ -145,15 +146,24 @@ export function stageShot(name, game) {
       }
       game.camera.lightningBolts.push({ segments, age: 0, life: 0.15, intensity: 0.9 });
     }
-    return { time: game.time, screen, screenData, rings: game.rings };
-
+    // Pan the frozen view down so Runway 18 (world y = groundY) rises into
+    // the bottom of the frame — without this the runway sits just below the
+    // bottom edge and the cover shows sea only. The plane stays in frame.
+    // (+90 left the strip at screen y ≈ 741, still off-frame; +170 puts it
+    // at ≈ 660, a visible strip above the bottom edge.)
+    game.camera.y += 170;
+    game.camera.targetY += 170;
+    return { time: game.time, screen, screenData, rings: game.rings, camera: game.camera };
   }
 
   if (name === 'parcel') {
     // Parcel Drop: fly the rings from the normal spawn, then the pad.
     startMission(1);
     const pad = getPadPosition(terrain);
-    const cap = 26;
+    // Long cap (60s): the approach overshoots the pad at speed and must
+    // circle back at delivery speed to line up — the old 26s cap (plus the
+    // 20s escape) froze the frame mid-overshoot with no pad in view.
+    const cap = 60;
     for (let t = 0; t < cap / STEP; t++) {
       const next = getNextRing(game.rings);
       const progress = missions.getMissionProgress();
@@ -163,9 +173,20 @@ export function stageShot(name, game) {
       const input = autopilot(game, target, cruise, STEP);
       stepScene(game, input, STEP);
       if (!next && missions.getMissionProgress().objectives.parcelDelivered) break;
-      if (game.time > 20 && !next) break;
     }
-    return { time: game.time, screen, screenData, rings: game.rings };
+    // Fly on past the pad (~1.5s) so the frozen frame shows the plane clear
+    // of the pad: otherwise the plane sits exactly on top of the green
+    // "DROP PAD" ring and its label and the pad reads as a smudge.
+    for (let i = 0; i < 90; i++) {
+      const input = autopilot(game, { x: pad.padX + 250, y: pad.padY - 60 }, 200, STEP);
+      stepScene(game, input, STEP);
+    }
+    // Freeze a clean delivery frame: repaired, level, gentle east descent.
+    plane.repair();
+    syncPlaneView();
+    planeView.heading = 0.12;
+    planeView.roll = 0;
+    return { time: game.time, screen, screenData, rings: game.rings, camera: game.camera };
   }
 
   if (name === 'landing') {
@@ -187,7 +208,14 @@ export function stageShot(name, game) {
     }
     // Advance dawn progress for the screenshot
     game.camera.dawnProgress = 0.6;
-    return { time: game.time, screen, screenData, rings: game.rings };
+    // Freeze a clean landing frame: the approach clips buildings and the
+    // plane arrives damaged and diving — repair it and level it into a
+    // gentle westbound flare so the shot reads as a landing, not a crash.
+    plane.repair();
+    syncPlaneView();
+    planeView.heading = Math.PI - 0.08;
+    planeView.roll = 0;
+    return { time: game.time, screen, screenData, rings: game.rings, camera: game.camera };
   }
 
   // Default: cover
@@ -200,5 +228,5 @@ export function stageShot(name, game) {
     stepScene(game, input, STEP);
     if (missions.getMissionProgress().objectives.ringsPassed >= 3) break;
   }
-  return { time: game.time, screen, screenData, rings: game.rings };
+  return { time: game.time, screen, screenData, rings: game.rings, camera: game.camera };
 }

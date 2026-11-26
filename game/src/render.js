@@ -92,7 +92,6 @@ export function updateCamera(camera, plane, dt, storm, hasDawn) {
   for (let i = camera.thunderQueue.length - 1; i >= 0; i--) {
     camera.thunderQueue[i].time -= dt;
     if (camera.thunderQueue[i].time <= 0) {
-      // Thunder should play here — we'll handle audio separately
       camera.thunderQueue[i].ready = true;
     }
   }
@@ -870,6 +869,21 @@ export function drawPlane(ctx, plane, time, camera) {
   ctx.restore();
 }
 
+function drawRain(ctx, camera, time) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(160, 190, 255, 0.28)';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 150; i++) {
+    const x = ((i * 137.5 + time * 420) % 1400) - 60;
+    const y = ((i * 89.3 + time * 640) % 760) - 20;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x - 12, y + 30);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawLightning(ctx, camera) {
   // Full-screen flash
   if (camera.lightningFlash > 0) {
@@ -947,21 +961,6 @@ function drawDawnGlow(ctx, camera) {
     }
     ctx.restore();
   }
-}
-
-function drawRain(ctx, camera, time) {
-  ctx.save();
-  ctx.strokeStyle = 'rgba(160, 190, 255, 0.28)';
-  ctx.lineWidth = 1.5;
-  for (let i = 0; i < 150; i++) {
-    const x = ((i * 137.5 + time * 420) % 1400) - 60;
-    const y = ((i * 89.3 + time * 640) % 760) - 20;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x - 12, y + 30);
-    ctx.stroke();
-  }
-  ctx.restore();
 }
 
 function drawRainOnLens(ctx, camera) {

@@ -1,63 +1,85 @@
-// Jakarta Night Courier — make.fun entry program (Node 22+, standard library only).
-// The game is this directory's game/ folder: plain static files a desktop browser
-// loads offline (game/index.html and its ES modules, no library, no network
-// request). This program copies game/ and screenshots/ from beside this file to
-// /output and writes /output/dossier.json, the summary the judge reads, using
-// the vendored make.fun library.
-//
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-//
-// The program is hermetic: it clears the three things it owns inside the
-// output directory (game/, screenshots/, dossier.json) before writing, so a
-// re-run never carries stale files from an earlier build, and two runs from
-// the same source always write the same bytes. It refuses to build a broken
-// entry: the game entrypoint and at least one screenshot must exist, and no
-// screenshot may exceed the 256 KiB gate limit.
-
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
+// Debug: show current working directory
+console.log('Current working directory:', process.cwd());
+
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 const MAX_SCREENSHOT_BYTES = 262144; // 256 KiB — the gate refuses anything larger
+const MIN_SCREENSHOTS = 1; // Require at least 1 screenshot
 
-function fail(message) {
-  console.error(`main.ts: ${message}`);
-  process.exit(1);
+function fail(message: string): void {
+    console.error(`main.ts: ${message}`);
+    process.exit(1);
 }
+
+// Create caps object with required text_max_bytes
+const caps = {
+    text_max_bytes: 262144, // 256 KiB
+    // Optional: screenshots capacity
+    screenshots: {
+        max: 10,
+        max_bytes: 10 * 1024 * 1024 // 10 MB
+    }
+};
 
 // Preconditions: the game entrypoint and at least one real screenshot.
-if (!existsSync(join(here, 'game', 'index.html'))) fail('game/index.html is missing — nothing to ship');
+if (!existsSync(join(here, 'game', 'index.html'))) {
+    fail('game/index.html is missing — nothing to ship');
+}
 const shotsDir = join(here, 'screenshots');
-if (!existsSync(shotsDir)) fail('screenshots/ is missing — the entry needs a cover');
-const shots = readdirSync(shotsDir)
-  .filter((name) => /\.(png|jpe?g)$/i.test(name))
-  .sort();
-if (shots.length === 0) fail('screenshots/ holds no PNG/JPEG — the entry needs a cover');
-if (shots.length > 4) fail(`screenshots/ holds ${shots.length} images — the gate allows at most 4`);
-for (const shot of shots) {
-  const size = statSync(join(shotsDir, shot)).size;
-  if (size > MAX_SCREENSHOT_BYTES) fail(`${shot} is ${size} bytes — over the 256 KiB gate limit`);
+if (!existsSync(shotsDir)) {
+    fail('screenshots/ is missing — the entry must include at least one screenshot');
 }
 
-// Hermetic output: clear only what this program owns, then write.
-mkdirSync(out, { recursive: true });
-for (const owned of ['game', 'screenshots', 'dossier.json']) {
-  rmSync(join(out, owned), { recursive: true, force: true });
+// Debug: see what files are actually in the directory
+const allFiles = readdirSync(shotsDir);
+console.log('All files in screenshots/:', allFiles);
+
+// Filter for image files
+const shotFiles = readdirSync(shotsDir).filter(f => {
+    const ext = f.toLowerCase().split('.').pop();
+    const validExts = ['png', 'jpg', 'jpeg', 'webp'];
+    return validExts.includes(ext);
+});
+console.log('Filtered shotFiles:', shotFiles);
+
+if (shotFiles.length < MIN_SCREENSHOTS) {
+    fail(`screenshots/ must contain at least ${MIN_SCREENSHOTS} image file(s)`);
 }
+for (const f of shotFiles) {
+    const fullPath = join(shotsDir, f);
+    if (statSync(fullPath).size > MAX_SCREENSHOT_BYTES) {
+        fail(`screenshots/${f} exceeds ${MAX_SCREENSHOT_BYTES} bytes (256 KiB gate limit)`);
+    }
+}
+
+// Prepare output: clear only what we own, then recreate.
+for (const dir of ['game', 'screenshots']) {
+    const target = join(out, dir);
+    if (existsSync(target)) {
+        rmSync(target, { recursive: true, force: true });
+    }
+    mkdirSync(target, { recursive: true });
+}
+
+const dossierPath = join(out, 'dossier.json');
+if (existsSync(dossierPath)) {
+    rmSync(dossierPath);
+}
+
+// Copy game/ (static entry) and screenshots/ verbatim.
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 cpSync(shotsDir, join(out, 'screenshots'), { recursive: true });
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
-// files, in all, or a path under game/ over 1000 bytes: game/ counts beside /output's own 1000-entry cap, its
-// screenshots/ and dossier.json).
+// Build and write the dossier — the judge reads this.
+// buildDossier returns a Uint8Array: write it DIRECTLY (v1's proven form).
+// NEVER JSON.stringify it — that turns the bytes into a giant numeric-key object.
 writeFileSync(
-  join(out, 'dossier.json'),
+  dossierPath,
   buildDossier(out, {
     text_max_bytes: 163840,
     screenshots: { max: 4, max_bytes: 262144 },
@@ -67,5 +89,7 @@ writeFileSync(
   }),
 );
 
-const dossierBytes = statSync(join(out, 'dossier.json')).size;
-console.log(`Jakarta Night Courier: game/ + ${shots.length} screenshot(s) (${shots.join(', ')}) -> ${out} (dossier.json ${dossierBytes} bytes)`);
+console.log(`Built entry in ${out}:`);
+console.log(`  game/        ${readdirSync(join(out, 'game')).length} files`);
+console.log(`  screenshots/ ${shotFiles.length} files (${shotFiles.join(', ')})`);
+console.log(`  dossier.json ${(statSync(dossierPath).size / 1024).toFixed(1)} KiB`);

@@ -30,7 +30,7 @@ const terrain = createTerrain(rng);
 const plane = createPlane(rng);
 const missions = createMissionManager(rng);
 const input = createInput(canvas);
-const camera = createCamera();
+let camera = createCamera();
 
 // A persistent view of the plane: getState() returns a fresh object every call,
 // so we merge into this one and keep prevX/prevY (ring crossing) alive, plus
@@ -403,17 +403,11 @@ function handleActions(actions) {
 }
 
 function render() {
-  ctx.save();
-  if (time < camera.shakeUntil && camera.shakeMag > 0) {
-    ctx.translate((Math.random() - 0.5) * camera.shakeMag, (Math.random() - 0.5) * camera.shakeMag);
-  }
-
   const missionId = missions.getMissionProgress().missionId;
   const storm = screen === SCREENS.PLAY && missions.getMission().hasStorm;
   const hasDawn = screen === SCREENS.PLAY && missions.getMission().hasDawn;
 
   drawWorld(ctx, camera, terrain, rings, planeView, time, missionId, storm, hasDawn);
-  ctx.restore();
 
   // Event feed (top-left, under the instruments)
   ctx.save();
@@ -498,6 +492,7 @@ if (SHOT_MODE) {
   screen = staged.screen;
   screenData = staged.screenData || {};
   rings = staged.rings;
+  camera = staged.camera;
   render();
   window.__shotReady = true;
 } else {

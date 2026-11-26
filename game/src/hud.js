@@ -198,9 +198,10 @@ function drawCompass(ctx, cx, cy, radius, heading, color, glowColor) {
   ctx.shadowBlur = 0;
   ctx.restore();
 
-  // Digital heading
-  drawGlowText(ctx, `${Math.round(headingDeg).toString().padStart(3, '0')}°`, cx, cy + radius + 24, 16, color, glowColor, 'center');
-  drawText(ctx, cardinal, cx, cy + radius + 42, 11, HUD.textMuted, 'center');
+  // Digital heading — inside the compass face (below the bug, above S).
+  // It used to sit at cy + radius + 24, where it overlapped the THR label
+  // of the throttle bar directly underneath (both centred at the same x).
+  drawGlowText(ctx, `${Math.round(headingDeg).toString().padStart(3, '0')}°`, cx, cy + 6, 16, color, glowColor, 'center');
 }
 
 /** Draw artificial horizon (attitude indicator). */
@@ -591,7 +592,8 @@ export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, m
     drawGlowText(ctx, `${Math.round(((plane.heading * 180 / Math.PI) + 450) % 360).toString().padStart(3, '0')}°`, FIELD.width - 120, FIELD.height - 40, 24, HUD.instrumentGlow, HUD.instrumentGlow, 'center');
 
     // WARNING INDICATORS
-    let warnY = 120;
+    // Start below the ring counter (which ends at ~131 in storm/dawn, ~101 in normal)
+    let warnY = 150;
     if (plane.fuel < 20) {
       drawGlowText(ctx, `FUEL LOW: ${Math.round(plane.fuel)}%`, FIELD.width / 2, warnY, 18, HUD.warningColor, HUD.warningColor, 'center');
       warnY += 26;
