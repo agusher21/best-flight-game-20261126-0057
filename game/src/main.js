@@ -9,8 +9,9 @@ import { createPlane } from './plane.js';
 import { createTerrain, updateTerrain, checkTerrainCollision, checkRunwayLanding } from './terrain.js';
 import { createRings, updateRings, getNextRing } from './rings.js';
 import { createMissionManager } from './missions.js';
-import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_MISSION_NEXT, ACTION_MISSION_PREV } from './input.js';
+import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_PHOTO, ACTION_MISSION_NEXT, ACTION_MISSION_PREV } from './input.js';
 import { drawHUD } from './hud.js';
+import { createPhotoMode, togglePhotoMode, panPhotoMode, drawLetterbox } from './photo.js';
 import { drawWorld, createCamera, updateCamera, shakeCamera, consumeThunder, getCameraTransform } from './render.js';
 import { initAudio, resumeAudio, updateEngineSound, updateWindSound, SFX, playThunder, playLightningCrack } from './audio.js';
 import { stageShot } from './shots.js';
@@ -57,6 +58,10 @@ let eventFeed = [];
 let lastClick = null;
 let fuelWarned = false;
 let audioStarted = false;
+// Photo mode (P) + the flown trail for the moving-map minimap.
+const photo = createPhotoMode();
+let trail = [];
+let trailTimer = 0;
 
 canvas.addEventListener('pointerdown', (event) => {
   const rect = canvas.getBoundingClientRect();
@@ -123,6 +128,8 @@ function startMission(missionId) {
   missions.startMission(planeView);
   totalScore = 0;
   eventFeed = [];
+  trail = [];
+  trailTimer = 0;
   fuelWarned = false;
   setScreen(SCREENS.PLAY);
   setStatus(`Mission ${missionId + 1}: ${MISSIONS[missionId].name}. ${MISSIONS[missionId].briefing}`);
@@ -164,6 +171,14 @@ function stepPlay(dt) {
   const brake = input.brake();
   const result = plane.step(dt, throttleInput, turnInput, brake, wind);
   syncPlaneView();
+
+  // Record the flown trail for the minimap (one point per ~0.3 s).
+  trailTimer += dt;
+  if (trailTimer >= 0.3) {
+    trailTimer = 0;
+    trail.push({ x: planeView.x, y: planeView.y });
+    if (trail.length > 160) trail.shift();
+  }
 
   // Apply storm wind to plane (handled in plane.step via wind parameter)
   // Update engine and wind audio
@@ -322,6 +337,16 @@ export function steerToward(target, cruiseSpeed) {
 }
 
 function handleActions(actions) {
+  if (actions & ACTION_PHOTO) {
+    // P toggles Photo Mode while playing (freeze, hide HUD, letterbox,
+    // free camera). ESC still pauses; P no longer pauses.
+    if (screen === SCREENS.PLAY) {
+      const on = togglePhotoMode(photo);
+      setStatus(on ? 'Photo mode — arrow keys pan the camera, P resumes.' : 'Photo mode off.');
+    }
+    return;
+  }
+
   if (actions & ACTION_PAUSE) {
     if (screen === SCREENS.PLAY) {
       setScreen(SCREENS.PAUSED);
@@ -406,8 +431,16 @@ function render() {
   const missionId = missions.getMissionProgress().missionId;
   const storm = screen === SCREENS.PLAY && missions.getMission().hasStorm;
   const hasDawn = screen === SCREENS.PLAY && missions.getMission().hasDawn;
+  const mission = missions.getMission();
+  const parcelVisible = mission.hasParcel && !missions.getMissionProgress().objectives.parcelDelivered;
 
-  drawWorld(ctx, camera, terrain, rings, planeView, time, missionId, storm, hasDawn);
+  drawWorld(ctx, camera, terrain, rings, planeView, time, missionId, storm, hasDawn, { parcelVisible });
+
+  // Photo mode: HUD hidden, letterbox bars, nothing else on screen.
+  if (photo.active) {
+    drawLetterbox(ctx, canvas.width, canvas.height);
+    return;
+  }
 
   // Event feed (top-left, under the instruments)
   ctx.save();
@@ -429,7 +462,7 @@ function render() {
   drawHUD(ctx, canvas.width, canvas.height, planeView, terrain, rings, missions, screen, {
     ...screenData,
     selectedMission,
-  });
+  }, { camera, trail });
 }
 
 let lastTimestamp = 0;
@@ -454,6 +487,22 @@ function frame(timestamp) {
   if (actions & ACTION_CONFIRM) {
     startAudioOnce();
   }
+
+  // Photo mode freezes the sim: no stepping, just pan the freed camera.
+  if (photo.active) {
+    if (screen !== SCREENS.PLAY) togglePhotoMode(photo);
+    else {
+      panPhotoMode(photo, input.turn(), input.throttle(), frameTime);
+      camera.freeX = photo.panX;
+      camera.freeY = photo.panY;
+    }
+    render();
+    input.endFrame();
+    lastClick = null;
+    return;
+  }
+  camera.freeX = 0;
+  camera.freeY = 0;
 
   while (accumulator >= STEP) {
     accumulator -= STEP;
@@ -493,6 +542,7 @@ if (SHOT_MODE) {
   screenData = staged.screenData || {};
   rings = staged.rings;
   camera = staged.camera;
+  trail = staged.trail || [];
   render();
   window.__shotReady = true;
 } else {

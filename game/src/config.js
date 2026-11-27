@@ -3,8 +3,11 @@
 
 export const FIELD = { width: 1280, height: 720, horizonY: 180 };
 
-/** Fixed simulation step in seconds: 60 updates per second regardless of display rate. */
-export const STEP = 1 / 60;
+/** Fixed simulation step in seconds: 120 updates per second regardless of display rate.
+ *  v2.4: was 1/60 — the 120 Hz step decouples difficulty from frame rate (a 30 fps
+ *  recording no longer flies a different game than a 60 fps one). Every consumer
+ *  already steps by dt, so the loop, autopilot and shot staging are unchanged. */
+export const STEP = 1 / 120;
 
 /** The longest frame the loop catches up on; a longer stall (hidden tab) is dropped, not replayed. */
 export const MAX_FRAME = 0.25;
@@ -154,7 +157,12 @@ export const RINGS = {
   /** Ring vertical variation range. */
   yVariation: 120,
   /** Ring horizontal spacing. */
-  xSpacing: 125,
+  xSpacing: 105,
+  /** Rings are staged inside the central ~60% of the field (screen x 256–1024)
+   *  so they never sit under a HUD column or get cut by a frame edge. The
+   *  mission paths in rings.js are built to this band; the renderer also fades
+   *  any ring that drifts past it instead of letting it overlap instruments. */
+  safeBand: { minX: 256, maxX: 1024 },
 };
 
 /** Runway constants. */
@@ -276,6 +284,39 @@ export const CAMERA = {
   minDistance: 80,
   /** Maximum distance clamp. */
   maxDistance: 200,
+  /** Spring stiffness (1/s^2) for the v2.4 spring-damper chase cam. */
+  springStiffness: 34,
+  /** Spring damping (1/s) — critically damped-ish, no overshoot wobble. */
+  springDamping: 9,
+  /** Extra look-ahead at max speed, for the speed-widened FOV feel. */
+  speedLookAhead: 60,
+  /** World roll applied at full bank (radians) — the horizon tilts with the plane. */
+  bankRoll: 0.05,
+};
+
+/** Photo mode (P key): freeze the sim, hide the HUD, letterbox the frame,
+ *  free the camera. The screenshot scenes are staged through the same
+ *  freeze + free-camera machinery. */
+export const PHOTO = {
+  letterboxHeight: 54,
+  panSpeed: 520,   // px/s while an arrow key is held in photo mode
+};
+
+/** Moving-map minimap (bottom-right): the flown trail + next-ring marker. */
+export const MINIMAP = {
+  x: 996,
+  y: 566,
+  width: 268,
+  height: 124,
+};
+
+/** ILS precision-approach needles (dawn landing only). Bottom-left, clear of
+ *  the plane, the rings and the flight-plan strip. */
+export const ILS = {
+  x: 16,
+  y: 540,
+  width: 160,
+  height: 96,
 };
 
 /** Mission state machine. */

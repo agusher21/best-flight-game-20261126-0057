@@ -25,7 +25,7 @@ export function createRings(missionId, random) {
     baseY = 250;
   }
 
-  const startX = 300;
+  const startX = 280;
   const spacing = RINGS.xSpacing;
 
   for (let i = 0; i < mission.ringCount; i++) {
@@ -79,9 +79,11 @@ export function createRings(missionId, random) {
       y = p.y;
     }
 
-    // Clamp to valid bounds (rings may sit low on a final approach)
-    x = Math.max(100, Math.min(FIELD.width - 100, x));
-    y = Math.max(100, Math.min(FIELD.height - 60, y));
+    // Clamp to the HUD safe band (config RINGS.safeBand): rings never sit
+    // under a HUD column or get cut by a frame edge. The y clamp keeps them
+    // clear of the top banner and the bottom flight-plan strip.
+    x = Math.max(RINGS.safeBand.minX, Math.min(RINGS.safeBand.maxX, x));
+    y = Math.max(110, Math.min(600, y));
 
     rings.push({
       x,

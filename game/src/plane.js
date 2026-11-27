@@ -152,15 +152,16 @@ export function createPlane(random) {
     // Engine sound pitch follows throttle and speed
     enginePitch = 0.3 + 0.7 * throttle + 0.2 * (speed / PLANE.maxSpeed);
 
-    // Add contrail particles occasionally
+    // Add contrail points occasionally — a thin line the renderer strokes,
+    // not smoke blobs (v2.4: small size, low alpha).
     if (Math.random() < 0.3 && speed > 150) {
       contrails.push({
         x: x - forwardX * 40,
         y: y - forwardY * 40,
         age: 0,
         life: 1.5 + Math.random() * 1.0,
-        size: 8 + Math.random() * 12,
-        alpha: 0.3 + Math.random() * 0.2,
+        size: 2 + Math.random() * 2,
+        alpha: 0.2 + Math.random() * 0.15,
       });
     }
 

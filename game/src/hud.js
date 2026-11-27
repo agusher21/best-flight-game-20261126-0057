@@ -1,7 +1,7 @@
 // HUD (Heads Up Display) rendering for Jakarta Night Courier — Storm Run.
 // Draws all flight instruments, gauges, and UI panels with glowing night-vision aesthetic.
 
-import { FIELD, HUD, PALETTE, PLANE, MISSIONS, SCREENS, CAMERA } from './config.js';
+import { FIELD, HUD, PALETTE, PLANE, MISSIONS, SCREENS, CAMERA, MINIMAP, ILS } from './config.js';
 
 /** Draw text helper. */
 function drawText(ctx, text, x, y, size, color, align = 'left', baseline = 'alphabetic', font = HUD.font) {
@@ -73,8 +73,17 @@ function drawCircularGauge(ctx, cx, cy, radius, value, maxValue, label, color, g
   drawText(ctx, label, cx, cy + radius * 0.9, 11, HUD.textMuted, 'center');
 }
 
-/** Draw a vertical tape gauge (speed, altimeter style). */
-function drawTapeGauge(ctx, x, y, width, height, value, maxValue, label, unit, color, glowColor, majorStep, minorStep) {
+/** Small dark backing plate so a label never fights the world behind it. */
+function drawPlate(ctx, x, y, w, h) {
+  ctx.fillStyle = 'rgba(4, 8, 16, 0.78)';
+  ctx.fillRect(x, y, w, h);
+}
+
+/** Draw a vertical tape gauge (speed, altimeter style).
+ *  v2.4: tick labels flip outward — ALT (left column) labels to the right,
+ *  SPD (right column) labels to the left, so no label is ever clipped by the
+ *  frame edge; every label sits on a backing plate. */
+function drawTapeGauge(ctx, x, y, width, height, value, maxValue, label, unit, color, glowColor, majorStep, minorStep, flip = false) {
   const pct = Math.max(0, Math.min(1, value / maxValue));
   const centerY = y + height / 2;
 
@@ -95,7 +104,7 @@ function drawTapeGauge(ctx, x, y, width, height, value, maxValue, label, unit, c
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Tick marks and numbers
+  // Tick marks and numbers (outward, on plates)
   const steps = Math.ceil(maxValue / majorStep);
   for (let i = 0; i <= steps; i++) {
     const tickValue = i * majorStep;
@@ -105,103 +114,135 @@ function drawTapeGauge(ctx, x, y, width, height, value, maxValue, label, unit, c
     if (tickY < y - 20 || tickY > y + height + 20) continue;
 
     const tickLen = 20;
-    const tickX = x + width;
+    const tickX = flip ? x : x + width;
 
     ctx.beginPath();
     ctx.moveTo(tickX, tickY);
-    ctx.lineTo(tickX + tickLen, tickY);
+    ctx.lineTo(flip ? tickX - tickLen : tickX + tickLen, tickY);
     ctx.lineWidth = 2;
     ctx.strokeStyle = color;
     ctx.stroke();
 
-    drawText(ctx, `${tickValue}${unit}`, tickX + tickLen + 4, tickY + 4, 11, HUD.textMuted, 'left');
-  }
-
-  // Current value indicator (triangle on right)
-  const indicatorY = y + height - pct * height;
-  ctx.beginPath();
-  ctx.moveTo(x + width + 2, indicatorY);
-  ctx.lineTo(x + width + 14, indicatorY - 6);
-  ctx.lineTo(x + width + 14, indicatorY + 6);
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.shadowColor = glowColor;
-  ctx.shadowBlur = 8;
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  // Digital readout at top
-  drawGlowText(ctx, `${Math.round(value)}${unit}`, x + width / 2, y + 22, 18, color, glowColor, 'center');
-  drawText(ctx, label, x + width / 2, y + height - 18, 11, HUD.textMuted, 'center');
-}
-
-/** Draw compass/heading indicator. */
-function drawCompass(ctx, cx, cy, radius, heading, color, glowColor) {
-  const headingDeg = ((heading * 180 / Math.PI) + 450) % 360;
-  const cardinal = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(headingDeg / 45) % 8];
-
-  // Outer ring
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = HUD.instrumentBorder;
-  ctx.stroke();
-
-  // Glow ring
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius + 2, 0, Math.PI * 2);
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = glowColor;
-  ctx.shadowColor = glowColor;
-  ctx.shadowBlur = 12;
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-
-  // Cardinal marks
-  for (let i = 0; i < 8; i++) {
-    const angle = (i * Math.PI / 4) - Math.PI / 2;
-    const isCardinal = i % 2 === 0;
-    const markLen = isCardinal ? 16 : 10;
-    const x1 = cx + Math.cos(angle) * (radius - 4);
-    const y1 = cy + Math.sin(angle) * (radius - 4);
-    const x2 = cx + Math.cos(angle) * (radius - 4 - markLen);
-    const y2 = cy + Math.sin(angle) * (radius - 4 - markLen);
-    ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
-    ctx.lineWidth = isCardinal ? 2 : 1;
-    ctx.strokeStyle = isCardinal ? color : HUD.textMuted;
-    ctx.stroke();
-
-    if (isCardinal) {
-      const label = ['N', 'E', 'S', 'W'][i / 2];
-      const lx = cx + Math.cos(angle) * (radius - 28);
-      const ly = cy + Math.sin(angle) * (radius - 28) + 5;
-      drawText(ctx, label, lx, ly, 12, HUD.textMuted, 'center');
+    const text = `${tickValue}${unit}`;
+    ctx.font = `12px ${HUD.font}`;
+    const tw = ctx.measureText(text).width;
+    if (flip) {
+      drawPlate(ctx, tickX - tickLen - tw - 8, tickY - 8, tw + 8, 16);
+      drawText(ctx, text, tickX - tickLen - 4, tickY + 4, 12, HUD.textMuted, 'right');
+    } else {
+      drawPlate(ctx, tickX + tickLen, tickY - 8, tw + 8, 16);
+      drawText(ctx, text, tickX + tickLen + 4, tickY + 4, 12, HUD.textMuted, 'left');
     }
   }
 
-  // Heading bug (triangle at top)
-  const bugAngle = -heading - Math.PI / 2;
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(bugAngle);
+  // Current value indicator (triangle on the outward side)
+  const indicatorY = y + height - pct * height;
   ctx.beginPath();
-  ctx.moveTo(0, -radius + 10);
-  ctx.lineTo(-6, -radius + 22);
-  ctx.lineTo(6, -radius + 22);
+  if (flip) {
+    ctx.moveTo(x - 2, indicatorY);
+    ctx.lineTo(x - 14, indicatorY - 6);
+    ctx.lineTo(x - 14, indicatorY + 6);
+  } else {
+    ctx.moveTo(x + width + 2, indicatorY);
+    ctx.lineTo(x + width + 14, indicatorY - 6);
+    ctx.lineTo(x + width + 14, indicatorY + 6);
+  }
   ctx.closePath();
   ctx.fillStyle = color;
   ctx.shadowColor = glowColor;
   ctx.shadowBlur = 8;
   ctx.fill();
   ctx.shadowBlur = 0;
-  ctx.restore();
 
-  // Digital heading — inside the compass face (below the bug, above S).
-  // It used to sit at cy + radius + 24, where it overlapped the THR label
-  // of the throttle bar directly underneath (both centred at the same x).
-  drawGlowText(ctx, `${Math.round(headingDeg).toString().padStart(3, '0')}°`, cx, cy + 6, 16, color, glowColor, 'center');
+  // Digital readout at top, on a plate; label plate at the bottom.
+  const valueText = `${Math.round(value)}${unit}`;
+  ctx.font = `700 18px ${HUD.font}`;
+  const vw = ctx.measureText(valueText).width;
+  drawPlate(ctx, x + width / 2 - vw / 2 - 4, y + 4, vw + 8, 24);
+  drawGlowText(ctx, valueText, x + width / 2, y + 22, 18, color, glowColor, 'center');
+  drawPlate(ctx, x + width / 2 - 18, y + height - 20, 36, 16);
+  drawText(ctx, label, x + width / 2, y + height - 8, 11, HUD.textMuted, 'center');
+}
+
+/** Heading tape (top centre) — replaces the old compass disc, whose digits
+ *  sat inside the face mashed against the cardinal letters ("W079°E").
+ *  A scrolling strip with cardinal letters, 15° ticks, a centre bug, and the
+ *  digits in their own pill BELOW the tape, never inside it. */
+function drawHeadingTape(ctx, cx, y, width, heading, color, glowColor) {
+  const headingDeg = ((heading * 180 / Math.PI) + 450) % 360;
+  const h = 28;
+  const x0 = cx - width / 2;
+  drawPlate(ctx, x0, y, width, h);
+  ctx.strokeStyle = HUD.instrumentBorder;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x0, y, width, h);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x0, y, width, h);
+  ctx.clip();
+  // 30° of heading visible each side of centre; 15° per 40 px.
+  const pxPerDeg = 40 / 15;
+  for (let d = -45; d <= 45; d += 5) {
+    const deg = Math.round((headingDeg + d + 360) % 360);
+    const px = cx + d * pxPerDeg;
+    const isCardinal = deg % 90 === 0;
+    const isMajor = deg % 15 === 0;
+    const len = isCardinal ? 14 : isMajor ? 10 : 5;
+    ctx.beginPath();
+    ctx.moveTo(px, y + h);
+    ctx.lineTo(px, y + h - len);
+    ctx.lineWidth = isCardinal ? 2 : 1;
+    ctx.strokeStyle = isCardinal ? color : HUD.textMuted;
+    ctx.stroke();
+    if (isCardinal) {
+      const label = ['N', 'E', 'S', 'W'][deg / 90];
+      drawText(ctx, label, px, y + 12, 12, color, 'center');
+    } else if (isMajor) {
+      drawText(ctx, `${deg}`, px, y + 12, 9, HUD.textMuted, 'center');
+    }
+  }
+  ctx.restore();
+  // Centre bug.
+  ctx.beginPath();
+  ctx.moveTo(cx, y + h - 2);
+  ctx.lineTo(cx - 7, y + h + 8);
+  ctx.lineTo(cx + 7, y + h + 8);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.shadowColor = glowColor;
+  ctx.shadowBlur = 8;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  // Digits in their own pill below the tape.
+  const text = `${Math.round(headingDeg).toString().padStart(3, '0')}°`;
+  ctx.font = `700 16px ${HUD.font}`;
+  const tw = ctx.measureText(text).width;
+  drawPlate(ctx, cx - tw / 2 - 10, y + h + 12, tw + 20, 24);
+  ctx.strokeStyle = HUD.instrumentBorder;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx - tw / 2 - 10, y + h + 12, tw + 20, 24);
+  drawGlowText(ctx, text, cx, y + h + 29, 16, color, glowColor, 'center');
+}
+
+/** Horizontal bar gauge (fuel / damage) — a labelled bar, never a clipped disc. */
+function drawBarGauge(ctx, x, y, width, value, maxValue, label, color, glowColor) {
+  const pct = Math.max(0, Math.min(1, value / maxValue));
+  const labelW = 52;
+  drawPlate(ctx, x, y, width + labelW + 46, 22);
+  drawText(ctx, label, x + 4, y + 16, 12, HUD.textMuted, 'left');
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+  ctx.fillRect(x + labelW, y + 4, width, 14);
+  if (pct > 0) {
+    ctx.fillStyle = color;
+    ctx.shadowColor = glowColor;
+    ctx.shadowBlur = 6;
+    ctx.fillRect(x + labelW, y + 4, width * pct, 14);
+    ctx.shadowBlur = 0;
+  }
+  ctx.strokeStyle = HUD.instrumentBorder;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + labelW, y + 4, width, 14);
+  drawText(ctx, `${Math.round(value)}`, x + labelW + width + 6, y + 16, 12, color, 'left');
 }
 
 /** Draw artificial horizon (attitude indicator). */
@@ -270,8 +311,10 @@ function drawAttitudeIndicator(ctx, cx, cy, radius, pitch, roll, color, glowColo
     ctx.stroke();
   }
 
-  // Roll pointer (triangle at top)
-  const pointerAngle = -roll - Math.PI / 2;
+  // Roll pointer (triangle at top) — it must sit at 12 o'clock when level
+  // and tilt with the bank. (The old code rotated it by -roll - PI/2, which
+  // parked it at 9 o'clock even in level flight — a stray arrow on the disc.)
+  const pointerAngle = roll;
   ctx.save();
   ctx.translate(cx, cy);
   ctx.rotate(pointerAngle);
@@ -288,51 +331,221 @@ function drawAttitudeIndicator(ctx, cx, cy, radius, pitch, roll, color, glowColo
   ctx.restore();
 }
 
-/** Draw throttle indicator. */
-function drawThrottleIndicator(ctx, x, y, width, height, throttle, color, glowColor) {
-  const pct = throttle;
-  const fillHeight = height * pct;
-
-  // Background
-  ctx.fillStyle = HUD.instrumentBg;
-  ctx.fillRect(x, y, width, height);
-  ctx.strokeStyle = HUD.instrumentBorder;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(x, y, width, height);
-
-  // Fill
-  const grad = ctx.createLinearGradient(x, y, x, y + height);
-  grad.addColorStop(0, color);
-  grad.addColorStop(1, glowColor);
+/** Compact horizontal throttle bar (bottom-left) — replaces the tall
+ *  mostly-empty vertical column. Flaps ride beside it as a labelled pill. */
+function drawThrottleBar(ctx, x, y, width, throttle, flaps, color, glowColor) {
+  const h = 16;
+  drawPlate(ctx, x - 4, y - 20, width + 108, 42);
+  drawText(ctx, 'THR', x, y - 6, 11, HUD.textMuted, 'left');
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+  ctx.fillRect(x, y, width, h);
+  const grad = ctx.createLinearGradient(x, y, x + width, y);
+  grad.addColorStop(0, glowColor);
+  grad.addColorStop(1, color);
   ctx.fillStyle = grad;
-  ctx.fillRect(x + 2, y + height - fillHeight - 2, width - 4, fillHeight);
-
-  // Glow on fill
   ctx.shadowColor = glowColor;
-  ctx.shadowBlur = 10;
-  ctx.fillRect(x + 2, y + height - fillHeight - 2, width - 4, fillHeight);
+  ctx.shadowBlur = 6;
+  ctx.fillRect(x, y, width * throttle, h);
   ctx.shadowBlur = 0;
-
-  // Label
-  drawText(ctx, 'THR', x + width / 2, y - 6, 11, HUD.textMuted, 'center');
-  drawText(ctx, `${Math.round(pct * 100)}%`, x + width / 2, y + height + 18, 11, HUD.textMuted, 'center');
+  ctx.strokeStyle = HUD.instrumentBorder;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x, y, width, h);
+  drawText(ctx, `${Math.round(throttle * 100)}%`, x + width + 8, y + 13, 12, color, 'left');
+  // Flaps pill, labelled — never a stray empty circle again.
+  const fx = x + width + 52;
+  ctx.fillStyle = flaps ? 'rgba(255, 204, 0, 0.25)' : 'rgba(255, 255, 255, 0.06)';
+  ctx.fillRect(fx, y - 2, 52, 20);
+  ctx.strokeStyle = flaps ? HUD.cautionColor : HUD.instrumentBorder;
+  ctx.strokeRect(fx, y - 2, 52, 20);
+  drawText(ctx, 'FLAPS', fx + 26, y + 12, 11, flaps ? HUD.cautionColor : HUD.textMuted, 'center');
 }
 
-/** Draw flaps indicator. */
-function drawFlapsIndicator(ctx, x, y, size, flaps, color, glowColor) {
+/** Moving-map minimap: coastline, runway, rings, the flown trail and the
+ *  plane marker — every shot shows a journey, not a dot in a void. */
+function drawMinimap(ctx, plane, rings, terrain, trail, box) {
+  const { x, y, width, height } = box;
+  const sx = width / FIELD.width;
+  const sy = height / FIELD.height;
+  drawPlate(ctx, x, y, width, height);
+  ctx.strokeStyle = HUD.instrumentBorder;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x, y, width, height);
+  ctx.save();
   ctx.beginPath();
-  ctx.arc(x, y, size, 0, Math.PI * 2);
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = flaps ? color : HUD.instrumentBorder;
-  ctx.stroke();
-
-  if (flaps) {
-    ctx.shadowColor = glowColor;
-    ctx.shadowBlur = 12;
+  ctx.rect(x, y, width, height);
+  ctx.clip();
+  // Ground / sea.
+  ctx.fillStyle = '#0b1120';
+  ctx.fillRect(x, y, terrain.coastX * sx, height);
+  ctx.fillStyle = '#081224';
+  ctx.fillRect(x + terrain.coastX * sx, y, width - terrain.coastX * sx, height);
+  // Runway strip.
+  ctx.fillStyle = '#e8f0ff';
+  ctx.fillRect(x + 40 * sx, y + (terrain.runwayY - 4) * sy, 300 * sx, 8 * sy);
+  // Monas dot.
+  ctx.fillStyle = '#ffd700';
+  ctx.beginPath();
+  ctx.arc(x + terrain.monas.x * sx, y + terrain.monas.y * sy, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  // Flown trail.
+  if (trail && trail.length > 1) {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < trail.length; i++) {
+      const px = x + trail[i].x * sx;
+      const py = y + trail[i].y * sy;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
     ctx.stroke();
-    ctx.shadowBlur = 0;
-    drawText(ctx, 'FLAPS', x, y + size + 18, 11, color, 'center');
   }
+  // Rings: passed green, next pulsing gold, the rest dim.
+  const next = rings.find((r) => !r.passed);
+  for (const ring of rings) {
+    const px = x + ring.x * sx;
+    const py = y + ring.y * sy;
+    ctx.beginPath();
+    ctx.arc(px, py, ring === next ? 5 : 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = ring.passed ? '#00ff88' : ring === next ? '#ffd700' : 'rgba(0, 255, 255, 0.6)';
+    ctx.fill();
+  }
+  // Plane marker.
+  const px = x + plane.x * sx;
+  const py = y + plane.y * sy;
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(plane.heading);
+  ctx.beginPath();
+  ctx.moveTo(8, 0);
+  ctx.lineTo(-6, -5);
+  ctx.lineTo(-6, 5);
+  ctx.closePath();
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = '#ffffff';
+  ctx.shadowBlur = 6;
+  ctx.fill();
+  ctx.restore();
+  ctx.restore();
+  drawText(ctx, 'MAP', x + 6, y + 12, 10, HUD.textMuted, 'left');
+}
+
+/** Flight-plan strip (bottom centre): DEPART → RINGS n/N → LAND, current
+ *  step lit — mission depth in one glance, no duplicated numbers. */
+function drawFlightPlan(ctx, cx, y, mission, progress) {
+  const steps = [
+    { label: 'DEPART RWY 18', done: true },
+    { label: `RINGS ${progress.objectives.ringsPassed}/${progress.objectives.ringsTotal}`, done: progress.objectives.ringsPassed >= progress.objectives.ringsTotal },
+    { label: mission.hasParcel ? 'DROP PAD' : 'LAND RWY 18', done: progress.objectives.parcelDelivered || progress.objectives.landed },
+  ];
+  ctx.font = `600 12px ${HUD.font}`;
+  const widths = steps.map((s) => ctx.measureText(s.label).width + 24);
+  const gap = 22; // room for the › separator between steps
+  const total = widths.reduce((a, b) => a + b, 0) + gap * (steps.length - 1);
+  let x = cx - total / 2;
+  drawPlate(ctx, x, y, total, 24);
+  ctx.strokeStyle = HUD.instrumentBorder;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x, y, total, 24);
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    drawText(ctx, s.label, x + 12, y + 17, 12, s.done ? HUD.safeColor : HUD.textPrimary, 'left');
+    x += widths[i];
+    if (i < steps.length - 1) {
+      drawText(ctx, '›', x + gap / 2, y + 17, 14, HUD.instrumentGlow, 'center');
+      x += gap;
+    }
+  }
+}
+
+/** ILS localizer + glideslope needles (dawn landing): the approach reads as
+ *  a precision approach, not a plane over a lit strip. */
+function drawILS(ctx, plane, terrain, box) {
+  const { x, y, width, height } = box;
+  drawPlate(ctx, x, y, width, height);
+  ctx.strokeStyle = HUD.instrumentBorder;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x, y, width, height);
+  drawText(ctx, 'ILS RWY 18', x + 8, y + 16, 11, HUD.instrumentGlow, 'left');
+  const cx = x + width / 2;
+  const cy = y + height / 2 + 6;
+  // Cross hairs.
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+  ctx.beginPath();
+  ctx.moveTo(cx - 34, cy);
+  ctx.lineTo(cx + 34, cy);
+  ctx.moveTo(cx, cy - 24);
+  ctx.lineTo(cx, cy + 24);
+  ctx.stroke();
+  // Localizer: lateral deviation from the runway centreline.
+  const locDev = Math.max(-1, Math.min(1, (plane.x - 190) / 220));
+  // Glideslope: height above/below a 3° slope from the threshold.
+  const dist = Math.max(40, Math.abs(plane.x - 190));
+  const glideY = terrain.runwayY - dist * 0.055;
+  const gsDev = Math.max(-1, Math.min(1, (plane.y - glideY) / 120));
+  ctx.strokeStyle = '#ffaa00';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(cx + locDev * 30, cy - 24);
+  ctx.lineTo(cx + locDev * 30, cy + 24);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx - 34, cy + gsDev * 20);
+  ctx.lineTo(cx + 34, cy + gsDev * 20);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+/** Edge-pinned NEXT-RING marker: when the objective is off-screen (or far),
+ *  a glass badge pins to the screen edge with a chevron pointing the way and
+ *  a LIVE distance. Hysteresis: it only appears beyond 260 m, so it never
+ *  flickers at the boundary. */
+function drawEdgeMarker(ctx, plane, ring, camera, dist) {
+  if (!camera || !ring || dist < 260) return;
+  const sx = ring.x - camera.x + FIELD.width / 2;
+  const sy = ring.y - camera.y + FIELD.height / 2;
+  if (sx > 150 && sx < 1130 && sy > 90 && sy < 640) return;
+  const bx = Math.max(90, Math.min(FIELD.width - 90, sx));
+  const by = Math.max(110, Math.min(620, sy));
+  const label = `RING ${ring.index + 1} · ${Math.round(dist)} m`;
+  ctx.font = `700 13px ${HUD.font}`;
+  const tw = ctx.measureText(label).width;
+  const w = tw + 44;
+  const x = bx - w / 2;
+  ctx.fillStyle = 'rgba(4, 12, 18, 0.82)';
+  ctx.fillRect(x, by - 17, w, 34);
+  ctx.strokeStyle = ring.colorGlow;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, by - 17, w, 34);
+  // Chevron pointing toward the ring.
+  const dirX = Math.sign(sx - bx) || (sx >= FIELD.width / 2 ? 1 : -1);
+  const dirY = Math.sign(sy - by) || 0;
+  ctx.fillStyle = ring.colorPrimary;
+  ctx.beginPath();
+  if (Math.abs(sx - bx) > Math.abs(sy - by)) {
+    const cxp = dirX > 0 ? x + w - 6 : x + 6;
+    ctx.moveTo(cxp + dirX * 8, by);
+    ctx.lineTo(cxp, by - 7);
+    ctx.lineTo(cxp, by + 7);
+  } else {
+    const cyp = dirY > 0 ? by + 17 - 6 : by - 17 + 6;
+    ctx.moveTo(bx, cyp + dirY * 8);
+    ctx.lineTo(bx - 7, cyp);
+    ctx.lineTo(bx + 7, cyp);
+  }
+  ctx.closePath();
+  ctx.fill();
+  drawText(ctx, label, x + w / 2 - (dirX > 0 && sx > FIELD.width ? 8 : 0), by + 5, 13, ring.colorPrimary, 'center');
+}
+
+/** One objective line under the mission name — the goal, in words. */
+function objectiveLine(missionId, progress, nextRing, plane) {
+  const p = progress.objectives;
+  const dist = nextRing ? Math.round(Math.hypot(nextRing.x - plane.x, nextRing.y - plane.y)) : 0;
+  if (missionId === 0) return `Ring ${p.ringsPassed + 1} of ${p.ringsTotal} — next ring ${dist} m ahead`;
+  if (missionId === 1) return p.parcelDelivered ? 'Parcel delivered — fly the last rings home' : `Ring ${p.ringsPassed + 1}/${p.ringsTotal} — then drop on the green pad`;
+  if (missionId === 2) return `Storm return — ring ${p.ringsPassed + 1}/${p.ringsTotal}, land Runway 18`;
+  return `Dawn approach — ring ${p.ringsPassed + 1}/${p.ringsTotal}, land Runway 18`;
 }
 
 /** Draw mission objective panel. */
@@ -381,31 +594,77 @@ function drawMissionPanel(ctx, mission, objectives, timeRemaining, x, y, width, 
   }
 }
 
-/** Draw screen overlay (title, briefing, paused, game over, mission complete). */
+/** Draw screen overlay (title, briefing, paused, game over, mission complete).
+ *  v2.4 title: NO full-screen black dim — the attract-mode world stays fully
+ *  lit behind translucent panels, so the menu shot reads as a game, not a
+ *  black rectangle. Title band top-left, controls panel top-right, four
+ *  readable mission cards along the bottom. */
 function drawScreenOverlay(ctx, canvasWidth, canvasHeight, screen, data = {}) {
-  ctx.fillStyle = screen === SCREENS.TITLE ? 'rgba(5, 8, 20, 0.78)' : 'rgba(5, 8, 20, 0.92)';
-  ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+  // Every screen except the title dims the world (the title keeps the world
+  // lit behind its panels — see the TITLE case).
+  if (screen !== SCREENS.TITLE) {
+    ctx.fillStyle = 'rgba(5, 8, 20, 0.92)';
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+  }
 
   const centerX = canvasWidth / 2;
   const centerY = canvasHeight / 2;
 
   switch (screen) {
     case SCREENS.TITLE: {
-      drawGlowText(ctx, 'JAKARTA NIGHT COURIER', centerX, centerY - 140, 48, HUD.textPrimary, HUD.instrumentGlow, 'center');
-      drawText(ctx, 'Storm Run', centerX, centerY - 95, 24, HUD.cautionColor, 'center');
-      drawText(ctx, 'Fly the neon skyline. Deliver the cargo. Survive the storm. Land at dawn.', centerX, centerY - 65, 16, HUD.textMuted, 'center');
+      // Title band (top-left, translucent — the skyline stays visible).
+      ctx.fillStyle = 'rgba(4, 8, 16, 0.62)';
+      ctx.fillRect(24, 24, 640, 118);
+      ctx.strokeStyle = 'rgba(0, 255, 204, 0.5)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(24, 24, 640, 118);
+      drawGlowText(ctx, 'JAKARTA NIGHT COURIER', 44, 78, 40, HUD.textPrimary, HUD.instrumentGlow, 'left');
+      drawText(ctx, 'Storm Run  —  fly the neon skyline. Deliver the cargo. Survive the storm. Land at dawn.', 44, 112, 15, HUD.textMuted, 'left');
 
-      drawText(ctx, 'CONTROLS', centerX, centerY, 18, HUD.instrumentGlow, 'center');
-      drawText(ctx, 'W / Up — Throttle Up', centerX - 30, centerY + 30, 14, HUD.textPrimary, 'right');
-      drawText(ctx, 'A / Left — Turn Left', centerX + 30, centerY + 30, 14, HUD.textPrimary, 'left');
-      drawText(ctx, 'S / Down — Throttle Down', centerX - 30, centerY + 52, 14, HUD.textPrimary, 'right');
-      drawText(ctx, 'D / Right — Turn Right', centerX + 30, centerY + 52, 14, HUD.textPrimary, 'left');
-      drawText(ctx, 'SPACE — Flaps / Brake', centerX - 30, centerY + 74, 14, HUD.textPrimary, 'right');
-      drawText(ctx, 'P / ESC — Pause', centerX + 30, centerY + 74, 14, HUD.textPrimary, 'left');
+      // Controls panel (top-right, compact two-column, translucent).
+      ctx.fillStyle = 'rgba(4, 8, 16, 0.62)';
+      ctx.fillRect(940, 24, 316, 118);
+      ctx.strokeStyle = HUD.instrumentBorder;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(940, 24, 316, 118);
+      drawText(ctx, 'CONTROLS', 958, 52, 13, HUD.instrumentGlow, 'left');
+      drawText(ctx, 'W/S — Throttle', 958, 76, 13, HUD.textPrimary, 'left');
+      drawText(ctx, 'A/D — Turn', 1130, 76, 13, HUD.textPrimary, 'left');
+      drawText(ctx, 'SPACE — Flaps / Brake', 958, 98, 13, HUD.textPrimary, 'left');
+      drawText(ctx, 'P — Photo Mode', 1130, 98, 13, HUD.textPrimary, 'left');
+      drawText(ctx, 'ESC — Pause', 958, 120, 13, HUD.textPrimary, 'left');
+      drawText(ctx, 'Arrows — Pan', 1130, 120, 13, HUD.textPrimary, 'left');
+
+      // Mission cards along the bottom — readable at thumbnail size.
+      const cards = [
+        { n: '01', name: 'Ring Run', meta: '8 rings  ·  120 s' },
+        { n: '02', name: 'Parcel Drop', meta: '4 rings  ·  parcel  ·  180 s' },
+        { n: '03', name: 'Storm Return', meta: '6 rings  ·  storm  ·  300 s' },
+        { n: '04', name: 'Dawn Landing', meta: '4 rings  ·  dawn  ·  180 s' },
+      ];
+      const cardW = 300;
+      const cardH = 96;
+      const gap = 12;
+      const totalW = cards.length * cardW + (cards.length - 1) * gap;
+      let cx = centerX - totalW / 2;
+      const cy = canvasHeight - cardH - 24;
+      for (const card of cards) {
+        ctx.fillStyle = 'rgba(4, 8, 16, 0.66)';
+        ctx.fillRect(cx, cy, cardW, cardH);
+        ctx.strokeStyle = HUD.instrumentBorder;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(cx, cy, cardW, cardH);
+        ctx.fillStyle = HUD.instrumentGlow;
+        ctx.fillRect(cx, cy, cardW, 3);
+        drawText(ctx, card.n, cx + 16, cy + 34, 15, HUD.instrumentGlow, 'left');
+        drawText(ctx, card.name, cx + 52, cy + 34, 19, HUD.textPrimary, 'left');
+        drawText(ctx, card.meta, cx + 16, cy + 66, 13, HUD.textMuted, 'left');
+        cx += cardW + gap;
+      }
 
       const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 300);
       ctx.globalAlpha = pulse;
-      drawText(ctx, 'PRESS SPACE OR CLICK TO BEGIN', centerX, centerY + 130, 20, HUD.instrumentGlow, 'center');
+      drawText(ctx, 'PRESS SPACE OR CLICK TO BEGIN', centerX, centerY + 180, 20, HUD.instrumentGlow, 'center');
       ctx.globalAlpha = 1;
       break;
     }
@@ -426,13 +685,8 @@ function drawScreenOverlay(ctx, canvasWidth, canvasHeight, screen, data = {}) {
         ctx.lineWidth = sel ? 3 : 2;
         ctx.strokeRect(x, y, w, h);
 
-        let missionIcon = '';
-        if (i === 0) missionIcon = '✈ ';
-        else if (i === 1) missionIcon = '📦 ';
-        else if (i === 2) missionIcon = '⛈ ';
-        else if (i === 3) missionIcon = '🌅 ';
-
-        drawText(ctx, `${i + 1}. ${missionIcon}${m.name}`, centerX, y + 24, sel ? 22 : 18, sel ? HUD.instrumentGlow : HUD.textPrimary, 'center');
+        // Plain numbers, never emoji (emoji renders as tofu in canvas text).
+        drawText(ctx, `${i + 1}. ${m.name}`, centerX, y + 24, sel ? 22 : 18, sel ? HUD.instrumentGlow : HUD.textPrimary, 'center');
         drawText(ctx, m.briefing, centerX, y + 48, 13, HUD.textMuted, 'center');
       }
       drawText(ctx, 'TAB / SHIFT+TAB to select  •  SPACE to confirm', centerX, centerY + 220, 14, HUD.textMuted, 'center');
@@ -504,8 +758,19 @@ function drawScreenOverlay(ctx, canvasWidth, canvasHeight, screen, data = {}) {
   }
 }
 
-/** Main HUD draw function. */
-export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, missionManager, screen, screenData) {
+/** Main HUD draw function.
+ *  v2.4 safe-zone layout — every value once, nothing overlapping:
+ *  top-left mission panel (name + objective line) · top-centre heading tape
+ *  with its digits in a pill below · top-right score + RING n/N pill ·
+ *  ALT tape left / SPD tape right (labels flipped outward, plated) ·
+ *  attitude disc moved inward/down, fuel + damage as labelled bars (no more
+ *  "/DMG") · compact horizontal throttle bottom-left with a labelled FLAPS
+ *  pill · flight-plan strip bottom-centre · moving-map minimap bottom-right ·
+ *  ILS needles on the dawn approach. The old bottom-centre duplicated
+ *  speed/heading readouts and the banner-overlapping bearing arrow are gone.
+ *  extra: { camera, trail } — camera feeds the edge-pinned next-ring marker,
+ *  trail feeds the minimap. */
+export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, missionManager, screen, screenData, extra = {}) {
   const scale = Math.min(canvasWidth / FIELD.width, canvasHeight / FIELD.height);
   const offsetX = (canvasWidth - FIELD.width * scale) / 2;
   const offsetY = (canvasHeight - FIELD.height * scale) / 2;
@@ -515,85 +780,88 @@ export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, m
   ctx.scale(scale, scale);
 
   if (screen === SCREENS.PLAY || screen === SCREENS.BRIEFING) {
-    const leftX = 20;
-
-    // Altimeter tape (vertical, left)
-    drawTapeGauge(ctx, leftX, 40, 60, 300, plane.altitude, 10000, 'ALT', ' FT', HUD.instrumentGlow, HUD.instrumentGlow, 1000, 500);
-
-    // Compass (below altimeter)
-    drawCompass(ctx, leftX + 30, 380, 50, plane.heading, HUD.instrumentGlow, HUD.instrumentGlow);
-
-    // Throttle indicator (below compass)
-    drawThrottleIndicator(ctx, leftX + 10, 450, 40, 180, plane.throttle, HUD.instrumentGlow, HUD.instrumentGlow);
-
-    // Flaps indicator
-    drawFlapsIndicator(ctx, leftX + 90, 610, 20, plane.flaps, HUD.cautionColor, HUD.cautionColor);
-
-    // RIGHT SIDE: Speed tape, Artificial Horizon, Fuel, Damage
-    const rightX = FIELD.width - 100;
-
-    // Airspeed tape (vertical, right)
-    drawTapeGauge(ctx, rightX - 60, 40, 60, 300, plane.speed, PLANE.maxSpeed, 'SPD', ' KT', HUD.instrumentGlow, HUD.instrumentGlow, 50, 10);
-
-    // Artificial Horizon (center-right)
-    drawAttitudeIndicator(ctx, rightX - 30, 380, 60, plane.pitch, plane.roll, HUD.instrumentGlow, HUD.instrumentGlow);
-
-    // Fuel gauge (circular, below horizon)
-    drawCircularGauge(ctx, rightX - 30, 500, 50, plane.fuel, PLANE.startingFuel, 'FUEL', HUD.safeColor, HUD.safeColor, HUD.instrumentBg);
-
-    // Damage gauge (circular, below fuel)
-    const dmgColor = plane.damage > 60 ? HUD.warningColor : plane.damage > 30 ? HUD.cautionColor : HUD.safeColor;
-    const dmgGlow = plane.damage > 60 ? HUD.warningColor : plane.damage > 30 ? HUD.cautionColor : HUD.safeColor;
-    drawCircularGauge(ctx, rightX - 30, 590, 50, plane.damage, PLANE.crashDamage, 'DMG', dmgColor, dmgGlow, HUD.instrumentBg);
-
-    // TOP CENTER: Mission info, Ring counter
     const mission = missionManager.getMission();
     const progress = missionManager.getMissionProgress();
     const nextRing = rings.find(r => !r.passed);
+    const missionId = progress.missionId;
 
-    const shownTime = screen === SCREENS.BRIEFING ? mission.timeLimit : progress.timeRemaining;
-    ctx.fillStyle = HUD.instrumentBg;
-    ctx.fillRect(FIELD.width / 2 - 150, 10, 300, 50);
+    // TOP-LEFT: mission panel — name + objective line, on a backing plate.
+    drawPlate(ctx, 16, 12, 400, 62);
     ctx.strokeStyle = HUD.instrumentBorder;
     ctx.lineWidth = 2;
-    ctx.strokeRect(FIELD.width / 2 - 150, 10, 300, 50);
+    ctx.strokeRect(16, 12, 400, 62);
+    ctx.fillStyle = HUD.instrumentGlow;
+    ctx.fillRect(18, 14, 396, 3);
+    drawText(ctx, mission.name.toUpperCase(), 32, 36, 16, HUD.instrumentGlow, 'left');
+    drawText(ctx, objectiveLine(missionId, progress, nextRing, plane), 32, 58, 12, HUD.textPrimary, 'left');
 
-    drawText(ctx, mission.name, FIELD.width / 2, 32, 16, HUD.instrumentGlow, 'center');
-    const timeColor = shownTime < 30 && screen === SCREENS.PLAY ? HUD.warningColor : HUD.textMuted;
-    drawText(ctx, `${Math.ceil(shownTime)}s`, FIELD.width / 2, 52, 14, timeColor, 'center');
+    // TOP-CENTRE: heading tape + digits pill below it (never inside the face).
+    drawHeadingTape(ctx, FIELD.width / 2, 12, 300, plane.heading, HUD.instrumentGlow, HUD.instrumentGlow);
 
-    // Score (top-right)
-    drawGlowText(ctx, `SCORE ${progress.score.toLocaleString()}`, FIELD.width - 20, 36, 20, HUD.instrumentGlow, HUD.instrumentGlow, 'right');
-
-    // Storm/Dawn indicator
-    if (mission.hasStorm) {
-      drawGlowText(ctx, '⛈ STORM ACTIVE', FIELD.width / 2, 75, 16, HUD.cautionColor, HUD.cautionColor, 'center');
+    // Storm / dawn flag under the heading pill — a coloured dot, never emoji
+    // (emoji renders as tofu squares in the canvas font).
+    if (mission.hasStorm || mission.hasDawn) {
+      const label = mission.hasStorm ? 'STORM ACTIVE' : 'DAWN APPROACH';
+      const ly = 100;
+      ctx.fillStyle = HUD.cautionColor;
+      ctx.beginPath();
+      ctx.arc(FIELD.width / 2 - 62, ly - 4, 5, 0, Math.PI * 2);
+      ctx.fill();
+      drawGlowText(ctx, label, FIELD.width / 2 - 50, ly, 14, HUD.cautionColor, HUD.cautionColor, 'left');
     }
-    if (mission.hasDawn) {
-      drawGlowText(ctx, '🌅 DAWN APPROACH', FIELD.width / 2, 75, 16, HUD.cautionColor, HUD.cautionColor, 'center');
-    }
 
-    // Ring counter
+    // TOP-RIGHT: score once, then the glanceable RING n/N + live distance pill.
+    drawGlowText(ctx, `SCORE ${Math.round(progress.score).toLocaleString()}`, FIELD.width - 16, 34, 20, HUD.instrumentGlow, HUD.instrumentGlow, 'right');
     if (nextRing) {
       const ringsPassed = rings.filter(r => r.passed).length;
-      const ringText = `RING ${ringsPassed + 1}/${mission.ringCount}`;
-      const dist = Math.sqrt((nextRing.x - plane.x) ** 2 + (nextRing.y - plane.y) ** 2);
-      ctx.fillStyle = HUD.instrumentBg;
-      ctx.fillRect(FIELD.width / 2 - 120, mission.hasStorm || mission.hasDawn ? 95 : 65, 240, 36);
+      const dist = Math.round(Math.hypot(nextRing.x - plane.x, nextRing.y - plane.y));
+      const pillText = `RING ${ringsPassed + 1}/${mission.ringCount}  ·  ${dist} m`;
+      ctx.font = `700 15px ${HUD.font}`;
+      const tw = ctx.measureText(pillText).width;
+      const px = FIELD.width - 16 - tw - 24;
+      drawPlate(ctx, px, 44, tw + 24, 36);
       ctx.strokeStyle = nextRing.colorGlow;
       ctx.lineWidth = 2;
-      ctx.strokeRect(FIELD.width / 2 - 120, mission.hasStorm || mission.hasDawn ? 95 : 65, 240, 36);
-      drawText(ctx, ringText, FIELD.width / 2, mission.hasStorm || mission.hasDawn ? 113 : 83, 14, nextRing.colorPrimary, 'center');
-      drawText(ctx, `${Math.round(dist)}m`, FIELD.width / 2, mission.hasStorm || mission.hasDawn ? 127 : 97, 12, HUD.textMuted, 'center');
+      ctx.strokeRect(px, 44, tw + 24, 36);
+      drawText(ctx, pillText, px + 12, 67, 15, nextRing.colorPrimary, 'left');
     }
 
-    // BOTTOM CENTER: Speed/Heading digital readouts
-    drawGlowText(ctx, `${Math.round(plane.speed)} KT`, 120, FIELD.height - 40, 24, HUD.instrumentGlow, HUD.instrumentGlow, 'center');
-    drawGlowText(ctx, `${Math.round(((plane.heading * 180 / Math.PI) + 450) % 360).toString().padStart(3, '0')}°`, FIELD.width - 120, FIELD.height - 40, 24, HUD.instrumentGlow, HUD.instrumentGlow, 'center');
+    // LEFT: altimeter tape. RIGHT: airspeed tape (labels flipped outward).
+    drawTapeGauge(ctx, 16, 100, 56, 230, plane.altitude, 10000, 'ALT', ' FT', HUD.instrumentGlow, HUD.instrumentGlow, 1000, 500, false);
+    drawTapeGauge(ctx, FIELD.width - 72, 100, 56, 230, plane.speed, PLANE.maxSpeed, 'SPD', ' KT', HUD.instrumentGlow, HUD.instrumentGlow, 50, 10, true);
 
-    // WARNING INDICATORS
-    // Start below the ring counter (which ends at ~131 in storm/dawn, ~101 in normal)
-    let warnY = 150;
+    // RIGHT-MIDDLE: attitude indicator, moved inward and down so no ring
+    // can sit behind it (old position hid the SPD label and the 0 KT tick).
+    drawAttitudeIndicator(ctx, 1110, 425, 50, plane.pitch, plane.roll, HUD.instrumentGlow, HUD.instrumentGlow);
+
+    // RIGHT-LOWER: fuel + damage as labelled horizontal bars.
+    drawBarGauge(ctx, 1000, 490, 150, plane.fuel, PLANE.startingFuel, 'FUEL', HUD.safeColor, HUD.safeColor);
+    const dmgColor = plane.damage > 60 ? HUD.warningColor : plane.damage > 30 ? HUD.cautionColor : HUD.safeColor;
+    drawBarGauge(ctx, 1000, 522, 150, plane.damage, PLANE.crashDamage, 'DMG', dmgColor, dmgColor);
+
+    // BOTTOM-LEFT: compact horizontal throttle + labelled FLAPS pill.
+    drawThrottleBar(ctx, 16, 660, 180, plane.throttle, plane.flaps, HUD.instrumentGlow, HUD.instrumentGlow);
+
+    // BOTTOM-CENTRE: flight-plan strip.
+    drawFlightPlan(ctx, FIELD.width / 2, 668, mission, progress);
+
+    // BOTTOM-RIGHT: moving-map minimap with the flown trail.
+    drawMinimap(ctx, plane, rings, terrain, extra.trail, MINIMAP);
+
+    // ILS needles on the dawn approach (and storm return's landing leg).
+    if (mission.hasDawn || missionId === 2) {
+      drawILS(ctx, plane, terrain, ILS);
+    }
+
+    // Edge-pinned next-ring marker (only when the ring is off-screen/far).
+    if (nextRing) {
+      const dist = Math.hypot(nextRing.x - plane.x, nextRing.y - plane.y);
+      drawEdgeMarker(ctx, plane, nextRing, extra.camera, dist);
+    }
+
+    // WARNING INDICATORS (below the heading area, clear of every pill).
+    const shownTime = screen === SCREENS.BRIEFING ? mission.timeLimit : progress.timeRemaining;
+    let warnY = 140;
     if (plane.fuel < 20) {
       drawGlowText(ctx, `FUEL LOW: ${Math.round(plane.fuel)}%`, FIELD.width / 2, warnY, 18, HUD.warningColor, HUD.warningColor, 'center');
       warnY += 26;
@@ -610,28 +878,9 @@ export function drawHUD(ctx, canvasWidth, canvasHeight, plane, terrain, rings, m
       drawGlowText(ctx, `OVERSPEED: ${Math.round(plane.speed)} KT`, FIELD.width / 2, warnY, 18, HUD.cautionColor, HUD.cautionColor, 'center');
       warnY += 26;
     }
-
-    // Next ring bearing indicator (small arrow at top)
-    if (nextRing) {
-      const bearing = Math.atan2(nextRing.y - plane.y, nextRing.x - plane.x);
-      const relBearing = bearing - plane.heading;
-      const arrowX = FIELD.width / 2 + Math.sin(relBearing) * 200;
-      const arrowY = 100 - Math.cos(relBearing) * 50;
-      ctx.save();
-      ctx.translate(arrowX, arrowY);
-      ctx.rotate(relBearing + Math.PI / 2);
-      ctx.beginPath();
-      ctx.moveTo(0, -15);
-      ctx.lineTo(-10, 5);
-      ctx.lineTo(10, 5);
-      ctx.closePath();
-      ctx.fillStyle = nextRing.colorPrimary;
-      ctx.shadowColor = nextRing.colorGlow;
-      ctx.shadowBlur = 10;
-      ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.restore();
-    }
+    // Timer lives in the mission panel's corner — small, once.
+    const timeColor = shownTime < 30 && screen === SCREENS.PLAY ? HUD.warningColor : HUD.textMuted;
+    drawText(ctx, `${Math.ceil(shownTime)}s`, 400, 36, 14, timeColor, 'right');
   }
 
   ctx.restore();

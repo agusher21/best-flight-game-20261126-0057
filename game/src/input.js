@@ -3,9 +3,10 @@
 // and taken once by the loop, so a press between two frames is never lost and never counted twice.
 
 export const ACTION_CONFIRM = 1;   // Space/Enter/Click - confirm, start, restart
-export const ACTION_PAUSE = 2;     // P/Escape - pause/resume
+export const ACTION_PAUSE = 2;     // Escape - pause/resume
 export const ACTION_MISSION_NEXT = 4;  // Tab - next mission in select
 export const ACTION_MISSION_PREV = 8;  // Shift+Tab - previous mission
+export const ACTION_PHOTO = 16;    // P - toggle Photo Mode (freeze, hide HUD, letterbox, free camera)
 
 const THROTTLE_UP = new Set(['ArrowUp', 'KeyW']);
 const THROTTLE_DOWN = new Set(['ArrowDown', 'KeyS']);
@@ -13,7 +14,8 @@ const TURN_LEFT = new Set(['ArrowLeft', 'KeyA']);
 const TURN_RIGHT = new Set(['ArrowRight', 'KeyD']);
 const BRAKE_FLAPS = new Set(['Space']);  // Space also acts as brake/flaps during flight
 const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
+const PAUSE = new Set(['Escape']);
+const PHOTO = new Set(['KeyP']);
 const MISSION_NEXT = new Set(['Tab']);
 const MISSION_PREV = new Set(['Tab']);  // With shift
 
@@ -39,6 +41,8 @@ export function createInput(target) {
       if (!event.repeat) actions |= ACTION_CONFIRM;
     } else if (CONFIRM.has(code)) {
       if (!event.repeat) actions |= ACTION_CONFIRM;
+    } else if (PHOTO.has(code)) {
+      if (!event.repeat) actions |= ACTION_PHOTO;
     } else if (PAUSE.has(code)) {
       if (!event.repeat) actions |= ACTION_PAUSE;
     } else if (MISSION_NEXT.has(code)) {
